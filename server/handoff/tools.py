@@ -126,12 +126,14 @@ MCP 도구 `status` 를 부르고 `next` 를 따른다.** 절차는 `/handoff` �
 
 # ─────────────────────────── ① 패키지 ───────────────────────────
 
-def import_design(root, path):
+def import_design(root, path=None, screens=None):
     cfg, st = _st(root)
     if flow.idx(st["phase"]) > flow.idx("review") and st["phase"] != "done":
         return _refuse(flow.require(st, "import", "spec", "api", "review", "done"))
     try:
-        src = design.import_package(root, path)
+        src = design.import_package(root, path) if path else os.path.basename(util.design_dir(root))
+        if screens:
+            design.confirm_screens(root, screens)
         m = design.scan(root)
     except design.DesignError as e:
         return _refuse(f"패키지를 못 읽었다: {e}")
@@ -144,9 +146,16 @@ def import_design(root, path):
           screens=[s["id"] for s in m["screens"]], tokens=len(m["tokens"]))
     cfg, st = _st(root)
     warn = "" if m["tokens"] else "\n! 토큰이 없다 — 색·치수 하드코딩 검출이 비활성이다 (패키지에 tokens.json 이나 css 변수가 있으면 잡힌다)."
+    if m.get("boards"):
+        warn += "\n탐색 보드(여러 안 비교 — 화면 아님, 참고 자료): " + ", ".join(m["boards"])
+    if any(s.get("state") for s in m["screens"]) and not m.get("confirmed"):
+        warn += ("\n! 프로토타입 한 파일 안의 상태 분기를 화면 후보로 뽑았다 — **사용자에게 목록을 보이고 확정받은 뒤** "
+                 "import_design(screens=[{id,title,file,anchor}...]) 로 다시 부른다 (design/handoff.manifest.json 에 남는다).")
     hints = design.readme_hints(root, m)
-    return {"ok": True, "source": src, "screens": [{"id": s["id"], "title": s["title"], "file": s["file"]} for s in m["screens"]],
-            "tokens": len(m["tokens"]), "docs": m["docs"], "assets": len(m["assets"]), "hints": hints,
+    return {"ok": True, "source": src, "confirmed": m.get("confirmed", False),
+            "screens": [{"id": s["id"], "title": s["title"], "file": s["file"], "anchor": s.get("anchor")} for s in m["screens"]],
+            "boards": m.get("boards", []), "tokens": len(m["tokens"]), "docs": m["docs"], "chats": m.get("chats", []),
+            "assets": len(m["assets"]), "hints": hints,
             "dashboard": _render(root, cfg, st),
             "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 토큰 {len(m['tokens'])}개 · 문서 {len(m['docs'])}개 "
                         f"(design/, 지문 {st['fingerprint']}).{warn}\n"

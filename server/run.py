@@ -7,6 +7,7 @@
   python3 run.py review   --root <레포>    # 계약 확정 (tty 필수)
   python3 run.py ship     --root <레포>    # 완료 승인 (tty 필수)
   python3 run.py dashboard --root <레포> [--port 8790]   # 로컬 실시간 현황판 (읽기 전용)
+  python3 run.py unbundle <standalone.html> <폴더>       # Claude Design standalone HTML 내보내기를 파일들로 펼친다
 
 review · ship 은 elicitation 미지원 클라이언트의 폴백이다 — tty 에서만 받는다.
 """
@@ -107,7 +108,8 @@ def serve_dashboard(root, port):
 def main():
     ap = argparse.ArgumentParser(description="handoff MCP 서버 · 사람용 CLI")
     ap.add_argument("cmd", nargs="?", default="serve",
-                    choices=["serve", "status", "setup", "review", "ship", "dashboard"])
+                    choices=["serve", "status", "setup", "review", "ship", "dashboard", "unbundle"])
+    ap.add_argument("args", nargs="*", help="unbundle: <standalone.html> <폴더>")
     ap.add_argument("--root", default=None)
     ap.add_argument("--port", type=int, default=8790)
     args = ap.parse_args()
@@ -118,6 +120,22 @@ def main():
         bootstrap_venv()
         from handoff import server
         server.main()
+        return 0
+
+    if args.cmd == "unbundle":
+        from handoff import design
+        if len(args.args) != 2:
+            print("unbundle <standalone.html> <폴더>", file=sys.stderr)
+            return 2
+        src, dest = args.args
+        if not design.is_bundled_html(src):
+            print(f"번들 html 이 아니다 (__bundler/manifest 없음): {src}", file=sys.stderr)
+            return 1
+        os.makedirs(dest, exist_ok=True)
+        written = design.unbundle(src, dest)
+        for rel in sorted(written.values()):
+            print(" ", rel)
+        print(f"펼침: {len(written)}개 + {design.stem_of(src)}.dc.html → {dest}")
         return 0
 
     from handoff import tools

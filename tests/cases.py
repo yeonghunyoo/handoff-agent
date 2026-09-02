@@ -215,6 +215,66 @@ def test_design_scan():
     check("scan: 실패한 가져오기가 이전 design/ 를 지운다 (원본 없음 상태)", flow.current(root, util.load_config(root))["phase"] == "import")
 
 
+def make_bundle(path, states=("isOnboarding", "isHome", "isStats")):
+    """Claude Design 'standalone HTML' 모양 — 매니페스트(gzip+base64) + 템플릿(아트보드) + CDN 목록."""
+    import gzip
+    def enc(b):
+        return base64.b64encode(gzip.compress(b)).decode()
+    jsx_id, rt_id, font_id, react_id = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", \
+        "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
+    man = {jsx_id: {"mime": "text/jsx", "compressed": True, "data": enc(b"// frame\nfunction IOSDevice(){}")},
+           rt_id: {"mime": "text/javascript", "compressed": True, "data": enc(b"// GENERATED from dc-runtime/src/*.ts")},
+           font_id: {"mime": "font/woff2", "compressed": True, "data": enc(b"wOF2fake")},
+           react_id: {"mime": "text/javascript", "compressed": True, "data": enc(b"react")}}
+    body = "".join(f'<sc-if value="{{{{ {st} }}}}"><div>{st}</div></sc-if>' for st in states)
+    tpl = (f'<!DOCTYPE html><html><head><script src="{rt_id}"></script></head><body><x-dc><helmet><style>'
+           f':root{{--color-accent:#c67139;--space-4:17.6px}} @font-face{{src:url("{font_id}")}}</style></helmet>'
+           f'<x-import from="{jsx_id}#/ios-frame.jsx">{body}</x-import></x-dc></body></html>')
+    html = ('<!DOCTYPE html><html><head><title>Bundled Page</title></head><body>'
+            f'<script type="__bundler/manifest">{json.dumps(man)}</script>'
+            '<script type="__bundler/ext_resources">' + json.dumps([{"id": "https://unpkg.com/react@18/umd/react.production.min.js", "uuid": react_id}]) + '</script>'
+            f'<script type="__bundler/template">{json.dumps(tpl).replace("</", "<\\/")}</script></body></html>')   # 실제 내보내기처럼 </ 를 이스케이프
+    with open(path, "w") as f:
+        f.write(html)
+    return path
+
+
+def test_bundle_and_states():
+    root = make_repo()
+    b = make_bundle(os.path.join(os.path.dirname(root), "forest.html"))
+    r = tools.import_design(root, b)
+    check("bundle: 펼침 — 아트보드·jsx·런타임·폰트, react 는 제외",
+          os.path.isfile(os.path.join(root, "design/forest.dc.html")) and os.path.isfile(os.path.join(root, "design/ios-frame.jsx"))
+          and os.path.isfile(os.path.join(root, "design/support.js")) and os.path.isdir(os.path.join(root, "design/fonts"))
+          and not any("react" in n for n in os.listdir(os.path.join(root, "design"))), os.listdir(os.path.join(root, "design")))
+    tpl = open(os.path.join(root, "design/forest.dc.html")).read()
+    check("bundle: uuid 참조를 경로로 되돌림", 'from="./ios-frame.jsx"' in tpl and 'src="./support.js"' in tpl and "1111-4111" not in tpl, tpl[:300])
+    check("bundle: 상태 분기 → 화면 후보 3", [s["id"] for s in r["screens"]] == ["onboarding", "home", "stats"] and not r["confirmed"], r["screens"])
+    check("bundle: 확정 요청 경고", "확정받은" in r["message"])
+    check("bundle: 토큰은 인라인 css 에서", r["tokens"] == 2)
+    r = tools.import_design(root, None, screens=[{"id": "onboarding", "title": "온보딩", "file": "forest.dc.html", "anchor": "isOnboarding"},
+                                                {"id": "home", "title": "홈", "file": "forest.dc.html", "anchor": "isHome"},
+                                                {"id": "nowPlaying", "title": "재생 중", "file": "forest.dc.html", "anchor": "nowPlayingOpen"}])
+    m = design.scan(root)
+    check("bundle: 사람 확정 목록이 우선", r["confirmed"] and [s["id"] for s in m["screens"]] == ["onboarding", "home", "nowPlaying"]
+          and m["screens"][2]["anchor"] == "nowPlayingOpen" and os.path.isfile(os.path.join(root, "design", design.MANIFEST_NAME)), m["screens"])
+    # CLI 로 펼치기만
+    out = os.path.join(os.path.dirname(root), "unb")
+    r_ = subprocess.run([sys.executable, os.path.join(HERE, "..", "server", "run.py"), "unbundle", b, out], capture_output=True, text=True)
+    check("bundle: run.py unbundle", r_.returncode == 0 and os.path.isfile(os.path.join(out, "forest.dc.html")) and "ios-frame.jsx" in r_.stdout, r_.stdout + r_.stderr)
+    check("bundle: run.py unbundle 은 번들 아닌 html 거부",
+          subprocess.run([sys.executable, os.path.join(HERE, "..", "server", "run.py"), "unbundle", os.path.join(root, "README.md"), out], capture_output=True, text=True).returncode == 1)
+    # 탐색 보드는 화면이 아니다
+    w(os.path.join(root, "design/Home Options.dc.html"), '<html><head><meta name="design_doc_mode" content="canvas"></head><body>'
+      + "".join(f'<x-import from="./ios-frame.jsx"><div id="{i}"></div></x-import>' for i in ("1a", "1b", "1c")) + "</body></html>")
+    m = design.scan(root)
+    check("bundle: 캔버스 보드 분리", m["boards"] == ["Home Options.dc.html"] and [s["id"] for s in m["screens"]] == ["onboarding", "home", "nowPlaying"], (m["boards"], m["screens"]))
+    # 잠긴 뒤 프롬프트에 anchor 가 실린다
+    tools.spec_save(root, SPEC); tools.api_submit(root, OPENAPI); tools.review(root, approver=APPROVE)
+    r = tools.build(root)
+    check("bundle: 프롬프트에 화면 anchor·보드", "forest.dc.html#isHome" in r["prompts"]["ios"] and "Screens.nowPlaying" in r["prompts"]["ios"], r["prompts"]["ios"][:1200])
+
+
 def test_flow_gates():
     root = make_repo()
     st = flow.current(root, util.load_config(root))
@@ -502,7 +562,7 @@ def test_hooks():
     check("hook: 미배선 레포는 통과", r.stdout.strip() == "")
 
 
-TESTS = [test_yaml_and_routes, test_design_scan, test_flow_gates, test_generation, test_happy_cycle,
+TESTS = [test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_flow_gates, test_generation, test_happy_cycle,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks]
 

@@ -32,7 +32,7 @@
 
 | 단계 | 무슨 일이 일어나나 | 사람이 할 일 |
 |---|---|---|
-| ① 패키지 등록 | zip/폴더를 `design/` 로 가져와 화면·토큰·문서를 발견한다 | 내보낸 패키지 경로를 준다. 화면 목록을 확인한다 |
+| ① 패키지 등록 | 링크(`claude.ai/design/p/…`) · 내보낸 zip/tar.gz · standalone HTML(번들 자동 펼침) · 폴더를 `design/` 로 가져와 화면·토큰·문서를 발견한다 | 링크나 파일 경로를 준다. **화면 목록을 확정한다** (프로토타입 한 파일 안의 상태 분기가 화면 후보로 뽑히고, 시트·오버레이는 직접 추가) |
 | ② 스펙 | 플랫폼 · 백엔드 스택 · 인프라(db/auth/hosting/env) **결정만 기록** | 후보 비교를 보고 직접 고른다 |
 | ③ 백엔드 계약 | 화면·문서에서 필요한 데이터로 `api/openapi.yaml` 초안 | — |
 | ④ 계약 확정 ✋ | 대시보드(화면 갤러리·토큰·라우트·결정)를 보인다 | 지문을 대조하고 승인/반려 |
@@ -55,12 +55,27 @@
 
 포맷은 고정돼 있지 않다. 발견 규칙으로 읽는다(관대하다):
 
-1. 최상위 json 에 `screens`/`tokens` 가 있으면 그것을 믿는다
-2. 화면 = html 파일 하나 (`01-order-list.html` → `Screens.orderList`). html 이 하나뿐이고 안에 `<section id>`/`data-screen` 이 여럿이면 그 섹션들
+1. 사람이 확정한 `design/handoff.manifest.json` 이 있으면 그것 (`import_design(screens=…)` 가 쓴다). 패키지 자체의 최상위 json 에 `screens`/`tokens` 가 있어도 같은 취급
+2. 화면 = `*.dc.html`/`*.html` 파일 하나 (`Order List.dc.html` → `Screens.orderList`). 아트보드 하나에 `<sc-if value="{{ isHome }}">` 상태 분기가 여럿이면 **그 분기들이 화면 후보** (프로토타입). 단일 html 의 `<section id>` 도 화면. `design_doc_mode=canvas` 보드(여러 안 비교)는 화면이 아니라 참고 자료
 3. 토큰 = css/html 의 `--커스텀-프로퍼티` + `*token*.json` (W3C `$value` 포함) → 색·치수·기타
-4. 문서 = `*.md` (README 먼저 — 스택 힌트를 인터뷰 기본값으로 제안한다) · 스크린샷 = 화면 이름과 맞는 이미지
+4. 문서 = `*.md` (README 먼저 — 스택 힌트를 인터뷰 기본값으로 제안한다) · `chats/` 는 대화 기록(의도) · 스크린샷 = 화면 이름과 맞는 이미지
+5. standalone HTML 내보내기(`__bundler/manifest`)는 아트보드 + jsx + 런타임 + 폰트로 펼친다 (CDN 의존성은 뺀다)
 
 화면이 0개면 등록을 거부한다. 토큰이 0개면 경고만(하드코딩 검출 비활성).
+
+## Claude Design 과의 연결 — `/claude-design`
+
+Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이다. `/claude-design` 스킬(과 같은 이름의 에이전트)이
+기능 하나하나를 통로에 대응시킨 **인터페이스 레이어**다:
+
+| 통로 | 되는 것 |
+|---|---|
+| Claude Design MCP 커넥터 (`claude mcp add --scope user --transport http claude-design https://api.anthropic.com/v1/design/mcp`) | 프로젝트·파일·핸드오프를 프로그램으로. "Send to local coding agent" 가 기대하는 것 |
+| DesignSync (`/design-sync`) | 디자인 시스템 올리기/내리기 · projectId 로 파일 읽기 (커넥터 폴백) |
+| 내보낸 파일 | zip · tar.gz · standalone HTML(`run.py unbundle` 또는 `import_design` 이 펼친다) |
+| `/design` 로컬 캔버스 | 웹 없이 `.dc.html` 초안 — 같은 형식이라 `import_design` 에 넣을 수 있다 |
+
+코멘트 · 캔버스 편집 · 공유 · Export 클릭은 웹 전용이다 — 스킬이 정확히 무엇을 누를지 안내하고 멈춘다.
 
 ## 보는 곳
 

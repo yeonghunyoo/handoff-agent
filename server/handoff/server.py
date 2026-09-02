@@ -58,10 +58,12 @@ def setup() -> dict:
 
 
 @mcp.tool()
-def import_design(path: str) -> dict:
-    """① Claude Design 핸드오프 패키지(zip 또는 폴더)를 design/ 로 가져오고 화면·토큰·문서를 발견한다.
+def import_design(path: str = "", screens: list | None = None) -> dict:
+    """① Claude Design 산출물을 design/ 로 가져오고 화면·토큰·문서를 발견한다. path: 핸드오프 zip/tar.gz ·
+    standalone HTML 내보내기(번들을 펼친다) · 폴더. 응답의 화면 후보를 사용자에게 보여 확정받고, 고칠 게 있으면
+    path 없이 screens=[{id,title,file,anchor}] 로 다시 부른다 (design/handoff.manifest.json 에 기록).
     done 상태에서 부르면 새 사이클을 연다."""
-    return tools.import_design(ROOT, path)
+    return tools.import_design(ROOT, path or None, screens)
 
 
 @mcp.tool()
