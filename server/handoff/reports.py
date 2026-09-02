@@ -97,6 +97,17 @@ def kickoff(root, cfg, role, st, t, handoff):
          f"Worktree: {wt}  (branch {git.branch(role)})",
          f"Role path: {role_path}/  — write only here [W1]", "",
          "## Read first (paths relative to the worktree)"]
+    dv = os.path.join(util.design_dir(root), "derived")
+    if os.path.isfile(os.path.join(dv, "intent.md")):
+        L.append("- design/derived/intent.md   (the designer's own words, oldest first — binding decisions; read before anything else)")
+    if os.path.isfile(os.path.join(dv, "entities.json")):
+        L.append("- design/derived/entities.json   (data arrays + initial state from the prototype — the domain model and seed data)")
+    if os.path.isfile(os.path.join(dv, "behavior.json")):
+        L.append("- design/derived/behavior.json   (handlers → state keys they set, tab transitions, timers — implement the same transitions)")
+    if os.path.isfile(os.path.join(dv, "strings.json")) and role != "backend":
+        L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3])")
+    if os.path.isfile(os.path.join(dv, "icons.json")) and role != "backend":
+        L.append("- design/derived/icons/*.svg + shared/generated/Icons.*   (icon assets — import each SVG under its name; Lucide style)")
     for d in m.get("docs", []):
         L.append(f"- design/{d}   (developer notes from the designer — follow them)")
     for c in m.get("chats", [])[:5]:
@@ -112,6 +123,7 @@ def kickoff(root, cfg, role, st, t, handoff):
     if role != "backend":
         L.append(f"- shared/generated/ApiRoutes{ext}, Screens{ext}"
                  + (f", DesignTokens{ext}" if m.get("tokens") else "")
+                 + (f", Strings{ext}, Icons{ext}" if os.path.isdir(dv) else "")
                  + "   (consume; never edit) [C2][C3]")
     L += ["", "## Decisions (human-made — do not re-decide)"]
     stack = spec.get("stack") or {}

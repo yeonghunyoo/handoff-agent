@@ -176,6 +176,58 @@ def _tokens_kotlin(tokens, hdr, pkg):
                      + _emit_kotlin(token_tree(tokens), 1) + ["}", ""])
 
 
+# ─────────────────────────── Strings · Icons (derived/) ───────────────────────────
+
+def _string_tree(rows):
+    """[{key:'home.title', text}] → {Home: {title: text}} (첫 조각이 그룹)"""
+    tree = {}
+    for r in rows:
+        grp, _, leaf = r["key"].partition(".")
+        leaf = ident(leaf.replace(".", " "))
+        tree.setdefault(ident(grp, upper=True), {})[leaf] = r["text"]
+    return tree
+
+
+def _strings_swift(rows, hdr):
+    L = [hdr, "public enum Strings {"]
+    for grp, items in sorted(_string_tree(rows).items()):
+        L.append(f"    public enum {grp} {{")
+        for k, v in sorted(items.items()):
+            L.append(f"        public static let {_swift_name(k)} = \"{v.replace(chr(92), chr(92)*2).replace(chr(34), chr(92)+chr(34))}\"")
+        L.append("    }")
+    L += ["}", ""]
+    return "\n".join(L)
+
+
+def _strings_kotlin(rows, hdr, pkg):
+    L = [hdr, f"package {pkg}", "", "object Strings {"]
+    for grp, items in sorted(_string_tree(rows).items()):
+        L.append(f"    object {grp} {{")
+        for k, v in sorted(items.items()):
+            L.append(f"        const val {_kotlin_name(k)} = \"{v.replace(chr(92), chr(92)*2).replace(chr(34), chr(92)+chr(34)).replace('$', '${chr(36)}')}\"")
+        L.append("    }")
+    L += ["}", ""]
+    return "\n".join(L)
+
+
+def _icons_swift(icons, hdr):
+    L = [hdr, "/// Asset names — add each design/derived/icons/<name>.svg to the asset catalog under the same name.",
+         "public enum Icons {"]
+    for i in icons:
+        L.append(f"    public static let {_swift_name(ident(i['name']))} = \"{i['name']}\"")
+    L += ["}", ""]
+    return "\n".join(L)
+
+
+def _icons_kotlin(icons, hdr, pkg):
+    L = [hdr, f"package {pkg}", "", "/** Drawable names — import each design/derived/icons/<name>.svg as a vector drawable ic_<snake_name>. */",
+         "object Icons {"]
+    for i in icons:
+        L.append(f"    const val {_kotlin_name(ident(i['name']))} = \"{i['name']}\"")
+    L += ["}", ""]
+    return "\n".join(L)
+
+
 # ─────────────────────────── 조립 ───────────────────────────
 
 def expected(root, cfg, version, manifest, routes):
@@ -196,6 +248,15 @@ def expected(root, cfg, version, manifest, routes):
         emits.append(("DesignTokens", "design/", d_sha,
                       lambda h: _tokens_swift(manifest["tokens"], h),
                       lambda h: _tokens_kotlin(manifest["tokens"], h, pkg)))
+    from . import derive
+    strs = (derive.read(root, "strings.json") or {}).get("strings") or []
+    if strs:
+        emits.append(("Strings", "design/derived/strings.json", d_sha,
+                      lambda h: _strings_swift(strs, h), lambda h: _strings_kotlin(strs, h, pkg)))
+    ics = (derive.read(root, "icons.json") or {}).get("icons") or []
+    if ics:
+        emits.append(("Icons", "design/derived/icons.json", d_sha,
+                      lambda h: _icons_swift(ics, h), lambda h: _icons_kotlin(ics, h, pkg)))
     for kind, src, sha, sw, kt in emits:
         hdr = _header(kind, src, sha, version)
         if "ios" in plats:

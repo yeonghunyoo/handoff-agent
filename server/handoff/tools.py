@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-from . import api, checks, design, flow, gen, git, leaks, reports, score, util
+from . import api, checks, derive, design, flow, gen, git, leaks, reports, score, util
 
 DRAFT = "spec.draft.json"
 LAST = "last-verify.json"
@@ -135,6 +135,8 @@ def import_design(root, path=None, screens=None):
         if screens:
             design.confirm_screens(root, screens)
         m = design.scan(root)
+        dv = derive.write_all(root, m)          # 파생물(문구·아이콘·모델·전이·의도·규칙) — 지문에 든다
+        m = design.scan(root)
     except design.DesignError as e:
         return _refuse(f"패키지를 못 읽었다: {e}")
     if st["phase"] == "done":
@@ -152,13 +154,14 @@ def import_design(root, path=None, screens=None):
         warn += ("\n! 프로토타입 한 파일 안의 상태 분기를 화면 후보로 뽑았다 — **사용자에게 목록을 보이고 확정받은 뒤** "
                  "import_design(screens=[{id,title,file,anchor}...]) 로 다시 부른다 (design/handoff.manifest.json 에 남는다).")
     hints = design.readme_hints(root, m)
-    return {"ok": True, "source": src, "confirmed": m.get("confirmed", False),
+    return {"ok": True, "source": src, "confirmed": m.get("confirmed", False), "derived": dv,
             "screens": [{"id": s["id"], "title": s["title"], "file": s["file"], "anchor": s.get("anchor")} for s in m["screens"]],
             "boards": m.get("boards", []), "tokens": len(m["tokens"]), "docs": m["docs"], "chats": m.get("chats", []),
             "assets": len(m["assets"]), "hints": hints,
             "dashboard": _render(root, cfg, st),
-            "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 토큰 {len(m['tokens'])}개 · 문서 {len(m['docs'])}개 "
-                        f"(design/, 지문 {st['fingerprint']}).{warn}\n"
+            "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 토큰 {len(m['tokens'])}개 · 문서 {len(m['docs'])}개 · "
+                        f"파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · 모델 {', '.join(dv['entities']) or '없음'} · "
+                        f"핸들러 {dv['handlers']} · 의도 {dv['intent_turns']}턴 (design/, 지문 {st['fingerprint']}).{warn}\n"
                         "화면 목록을 사용자에게 보이고 빠진 화면이 없는지 확인받는다.\n"
                         + (f"README 의 스택 힌트 (기본값 제안 — 사람이 확정):\n  " + "\n  ".join(hints) + "\n" if hints else "")
                         + f"다음: {st['next']}")}

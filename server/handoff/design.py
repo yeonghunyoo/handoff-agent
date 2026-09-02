@@ -46,8 +46,9 @@ class DesignError(ValueError):
 # ─────────────────────────── 가져오기 ───────────────────────────
 
 def import_package(root, src):
-    """zip 또는 디렉토리를 design/ 로 옮긴다 (기존 design/ 은 교체). 반환: 원본 이름."""
-    src = os.path.abspath(os.path.expanduser(src))
+    """zip 또는 디렉토리를 design/ 로 옮긴다 (기존 design/ 은 교체). 반환: 원본 이름. 상대 경로는 레포 기준."""
+    src = os.path.expanduser(src)
+    src = os.path.abspath(src if os.path.isabs(src) else os.path.join(root, src))
     if not os.path.exists(src):
         raise DesignError(f"경로가 없다: {src}")
     dest = util.design_dir(root)
@@ -359,6 +360,7 @@ def scan(root):
         if not f.lower().endswith(HTML_EXT) or re.search(r"[-_. ](print|preview)$", stem_of(f), re.I):
             continue                                                            # 인쇄용 변형은 화면이 아니다
         (boards if is_board(util.read_text(os.path.join(d, f))) else htmls).append(f)
+    everything = [f for f in everything if not f.startswith("derived/")]     # 서버 파생물은 원본이 아니다
     mds = [f for f in everything if f.lower().endswith(".md")]
     chats = sorted(f for f in everything if is_chat(f) and f.lower().endswith((".md", ".json", ".txt")))
     docs = sorted((f for f in mds if f not in chats),

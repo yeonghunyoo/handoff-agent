@@ -63,6 +63,19 @@
 
 화면이 0개면 등록을 거부한다. 토큰이 0개면 경고만(하드코딩 검출 비활성).
 
+### 파생물 — `design/derived/` (서버가 결정적으로 뽑는다)
+
+네이티브 구현에 화면·토큰만으로는 부족한 다섯 가지를 프로토타입에서 규칙으로 뽑아 계약(지문)에 넣는다:
+
+| 파일 | 출처 → 규칙 | 쓰임 |
+|---|---|---|
+| `intent.md` | 대화 기록의 **사용자 턴**만 시간순 (JSON 이 256 KiB 에서 잘리므로 정규식) | 착수 프롬프트 맨 위 — 화면에 안 보이는 동작 규칙 |
+| `entities.json` | 스크립트의 `const NAME = [...]` + 초기 `state` (JS 리터럴 파서) | 도메인 모델 · 시드 · openapi 초안 입력 |
+| `strings.json` → `Strings.*` | 텍스트 노드(상태 분기·오버레이로 화면 귀속) + 데이터 문구 + 템플릿 조각. 키는 한글 로마자 (`onboarding.geonneottwigi`) | 앱 코드의 한글 리터럴 = `raw-string` 하드코딩 |
+| `icons.json` + `icons/*.svg` → `Icons.*` | 인라인 SVG 를 path 해시로 중복 제거, 이름은 근처 핸들러 (`setTabHome` → `tabHome`) | `ICN-xx` 소비 항목 · 파리티 |
+| `behavior.json` | 핸들러 → 바꾸는 state 키 · 탭 전이 · 타이머(ms) | 두 플랫폼이 같은 전이표를 구현 |
+| `rules.json` | 디자인 시스템 `_adherence`(hex·px·폰트 금지) | `raw-font` 검출 등 검사 규칙이 디자인 시스템을 따라간다 |
+
 ## Claude Design 과의 연결 — `/claude-design`
 
 Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이다. `/claude-design` 스킬(과 같은 이름의 에이전트)이

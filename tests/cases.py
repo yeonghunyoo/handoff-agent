@@ -16,7 +16,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "server"))
 
-from handoff import api, checks, design, flow, gen, git, leaks, score, tools, util  # noqa: E402
+from handoff import api, checks, derive, design, flow, gen, git, leaks, score, tools, util  # noqa: E402
 
 APPROVE = lambda m, i: {"approved": True, "reason": ""}          # noqa: E731
 REJECT = lambda m, i: {"approved": False, "reason": "빠진 라우트"}  # noqa: E731
@@ -275,6 +275,110 @@ def test_bundle_and_states():
     check("bundle: 프롬프트에 화면 anchor·보드", "forest.dc.html#isHome" in r["prompts"]["ios"] and "Screens.nowPlaying" in r["prompts"]["ios"], r["prompts"]["ios"][:1200])
 
 
+PROTO = """<!DOCTYPE html><html><head><script src="./support.js"></script></head><body><x-dc><helmet>
+<style>:root{--color-accent:#c67139;--space-4:17.6px;--font-body:"Figtree"}</style></helmet>
+<x-import component-from-global-scope="IOSDevice" from="./ios-frame.jsx" hint-size="402px,874px">
+<sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ true }}"><div><span sc-camel-on-click="{{ skipOnboarding }}">건너뛰기</span>
+<h1>{{ obSlide.title }}</h1><div sc-camel-on-click="{{ nextOnboarding }}">{{ obButtonLabel }}</div></div></sc-if>
+<sc-if value="{{ appVisible }}" hint-placeholder-val="{{ false }}"><div>
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}"><div><span>forest</span><span>추천 믹싱</span>
+<div sc-camel-on-click="{{ p.open }}"><svg width="14" viewBox="0 0 24 24"><path d="M7 4.5v15z"></path></svg></div></div></sc-if>
+<sc-if value="{{ isStats }}" hint-placeholder-val="{{ false }}"><h1>기록</h1></sc-if>
+<div sc-camel-on-click="{{ setTabHome }}"><svg width="22" viewBox="0 0 24 24"><path d="M3 11l9-8z"></path></svg>홈</div>
+<div sc-camel-on-click="{{ setTabStats }}"><svg width="22" viewBox="0 0 24 24"><path d="M4 20V10z"></path></svg>기록</div>
+</div></sc-if>
+<div style="{{ settingsSheetStyle }}"><b>김서연</b><span>구독 관리</span>
+<span sc-camel-on-click="{{ closeSettings }}"><svg width="16" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"></path></svg></span></div>
+<div style="{{ settingsSheetStyle }}"><span>로그아웃</span><svg width="14" viewBox="0 0 24 24"><path d="M7 4.5v15z"></path></svg></div>
+</x-import></x-dc>
+<script type="text/x-dc" data-dc-script>
+const LAYERS = [
+  { id: 'wave', label: '파도', color: 'var(--color-accent-500)' },
+  { id: 'rain', label: '비', color: 'var(--color-accent-2-600)' },
+];
+const PRESETS = [
+  { id: 'evening-wave', name: '저녁 물결', desc: '파도 · 장작', volumes: { wave: 75, fire: 45 } },
+];
+const SLEEP_OPTS = [15, 30, null];
+class Component extends DCLogic {
+  state = { isOnboarding: true, tab: 'home', settingsOpen: false, favorites: ['evening-wave'], playElapsed: 0 };
+  skipOnboarding = () => this.setState({ isOnboarding: false, tab: 'home' });
+  nextOnboarding = () => { this.setState(s => ({ obStep: s.obStep + 1 })); };
+  openSettings = () => this.setState({ settingsOpen: true });
+  closeSettings = () => this.setState({ settingsOpen: false });
+  startPress = () => { this._lp = setTimeout(() => this.setState(s => ({ uiHidden: !s.uiHidden })), 550); };
+  renderVals() {
+    const label = `${String(1).padStart(2, '0')} 재생 중`;
+    return { setTabHome: () => this.setTab('home'), setTabStats: () => this.setTab('stats'),
+             obButtonLabel: s.obStep === 2 ? '시작하기' : '다음' };
+  }
+}
+</script></body></html>
+"""
+
+CHAT = ('{"chats":{"a":{"title":"t","messages":[{"role":"user","content":"Continuing from x"},'
+        '{"role":"assistant","content":"ok"},{"role":"user","content":"온보딩 건너뛰기는 홈으로"},'
+        '{"role":"user","content":"1a 채택"}]}}}')
+
+
+def test_derive():
+    root = make_repo()
+    d = os.path.join(root, "design")
+    w(os.path.join(d, "forest.dc.html"), PROTO)
+    w(os.path.join(d, "chats", "conversation.json"), CHAT)
+    w(os.path.join(d, "_ds", "org", "_adherence.oxlintrc.json"), json.dumps({"rules": {"no-restricted-syntax": ["warn",
+        {"selector": "Literal[value=/#[0-9a-fA-F]{3,8}\\b/]", "message": "Raw hex color"}, {"selector": "x", "message": "Raw px value"}]},
+        "x-omelette": {"fontFamilies": ["Caprasimo", "Figtree"]}}))
+    r = tools.import_design(root, "design", screens=[
+        {"id": "onboarding", "title": "온보딩", "file": "forest.dc.html", "anchor": "isOnboarding"},
+        {"id": "home", "title": "홈", "file": "forest.dc.html", "anchor": "isHome"},
+        {"id": "stats", "title": "기록", "file": "forest.dc.html", "anchor": "isStats"},
+        {"id": "settings", "title": "설정 시트", "file": "forest.dc.html", "anchor": "settingsOpen"}])
+    dv = r["derived"]
+    check("derive: 요약", dv["entities"] == ["LAYERS", "PRESETS", "SLEEP_OPTS"] and dv["intent_turns"] == 2 and dv["rules"]["fonts"] == ["Caprasimo", "Figtree"]
+          and dv["rules"]["no_hex"] and dv["rules"]["no_px"], dv)
+    e = derive.read(root, "entities.json")
+    check("derive: JS 리터럴 → JSON", e["PRESETS"][0]["volumes"] == {"wave": 75, "fire": 45} and e["SLEEP_OPTS"] == [15, 30, None]
+          and e["_state"]["favorites"] == ["evening-wave"] and e["_state"]["tab"] == "home", e)
+    st = {x["key"]: x for x in derive.read(root, "strings.json")["strings"]}
+    check("derive: 문구 — 화면 귀속 · 로마자 키 · 데이터 문구 · 템플릿 조각",
+          st["onboarding.geonneottwigi"]["text"] == "건너뛰기" and st["home.chucheonMiksing"]["screen"] == "home"
+          and st["settings.gimseoyeon"]["screen"] == "settings" and st["presets.eveningWave.name"]["text"] == "저녁 물결"
+          and st["layers.wave.label"]["text"] == "파도" and any(v["text"] == "{} 재생 중" for v in st.values())
+          and any(v["text"] == "시작하기" for v in st.values()), sorted(st)[:20])
+    check("derive: {{ }} 바인딩은 문구가 아니다", not any("obSlide" in k or "{{" in v["text"] for k, v in st.items()))
+    ic = {i["name"]: i for i in derive.read(root, "icons.json")["icons"]}
+    check("derive: 아이콘 — 핸들러 이름 · 중복 제거 · 화면", set(ic) == {"play", "tabHome", "tabStats", "chevronDown"}
+          and ic["play"]["uses"] == 2 and set(ic["play"]["screens"]) == {"home", "settings"}, ic)
+    check("derive: 아이콘 svg 파일", os.path.isfile(os.path.join(d, "derived", "icons", "tabHome.svg")))
+    b = derive.read(root, "behavior.json")
+    check("derive: 전이표", b["tab_transitions"] == {"setTabHome": {"tab": "home"}, "setTabStats": {"tab": "stats"}}
+          and b["handlers"]["skipOnboarding"]["sets"] == ["isOnboarding", "tab"] and b["timers_ms"] == [550], b)
+    intent = open(os.path.join(d, "derived", "intent.md"), encoding="utf-8").read()
+    check("derive: 의도 로그 (Continuing 제외)", "온보딩 건너뛰기는 홈으로" in intent and "1a 채택" in intent and "Continuing" not in intent)
+    m = design.scan(root)
+    check("derive: derived/ 는 문서·화면으로 안 센다", m["docs"] == [] and len(m["screens"]) == 4 and m["chats"] == ["chats/conversation.json"], (m["docs"], m["chats"]))
+    # 생성 상수 + 검사
+    tools.spec_save(root, SPEC); tools.api_submit(root, OPENAPI); tools.review(root, approver=APPROVE)
+    r = tools.build(root)
+    gen_dir = os.path.join(wt(root, "ios"), "shared", "generated")
+    check("derive: Strings/Icons 생성", os.path.isfile(os.path.join(gen_dir, "Strings.swift")) and os.path.isfile(os.path.join(gen_dir, "Icons.kt")))
+    sw = open(os.path.join(gen_dir, "Strings.swift")).read()
+    check("derive: Strings 내용", 'public enum Onboarding {' in sw and 'geonneottwigi = "건너뛰기"' in sw and "public enum Presets {" in sw, sw[:600])
+    p = r["prompts"]["ios"]
+    check("derive: 프롬프트 — intent 먼저 · ICN 항목 · Strings/Icons", "design/derived/intent.md" in p and "ICN-01" in p and "Icons.tabHome" in p
+          and "Strings.swift, Icons.swift" in p, p[:1500])
+    # 검사: 한글 리터럴 = raw-string, 미허용 폰트 = raw-font, 아이콘 소비
+    t = wt(root, "ios")
+    w(os.path.join(t, "apps/ios/Main.swift"), 'let a = Strings.Onboarding.geonneottwigi\nlet b = Text("건너뛰기")\nlet f = Font.custom("Inter", size: 12)\n'
+      'let i = Icons.tabHome\nlet s = Screens.home; let r = ApiRoutes.getOrders\n')
+    git.commit_all(t, "impl")
+    pre = tools.precheck(root, "ios")
+    kinds = sorted(h["kind"] for h in pre["hardcodes"])
+    check("derive: raw-string · raw-font 검출", kinds == ["raw-font", "raw-string"], pre["hardcodes"])
+    check("derive: 아이콘 소비 항목", any(u.startswith("ICN-") for u in pre["consumption"]["unused"]) and pre["consumption"]["total"] == 3 + 4 + 4, pre["consumption"])
+
+
 def test_flow_gates():
     root = make_repo()
     st = flow.current(root, util.load_config(root))
@@ -321,8 +425,12 @@ def test_generation():
     cfg = util.load_config(root)
     m = design.scan(root)
     files = gen.expected(root, cfg, 1, m, api.validate(OPENAPI))
-    check("gen: 6 파일", sorted(files) == [f"shared/generated/{n}" for n in
-                                       ["ApiRoutes.kt", "ApiRoutes.swift", "DesignTokens.kt", "DesignTokens.swift", "Screens.kt", "Screens.swift"]], sorted(files))
+    names = sorted(os.path.basename(f) for f in files)
+    check("gen: 6종 × 2 (Strings 포함)", names == sorted(["ApiRoutes.kt", "ApiRoutes.swift", "DesignTokens.kt", "DesignTokens.swift",
+                                                      "Screens.kt", "Screens.swift", "Strings.kt", "Strings.swift"]), names)
+    check("gen: Strings 는 화면별 그룹 (파일 = 화면)", "public enum Strings {" in files["shared/generated/Strings.swift"]
+          and "public enum OrderList {" in files["shared/generated/Strings.swift"]
+          and 'orderList = "Order List"' in files["shared/generated/Strings.swift"], files["shared/generated/Strings.swift"][:600])
     sw = files["shared/generated/DesignTokens.swift"]
     check("gen: 토큰 중첩·타입", "public enum Color {" in sw and 'public static let accent: String = "#0A84FF"' in sw
           and "public enum Spacing {" in sw and "public static let md: CGFloat = CGFloat(16)" in sw, sw)
@@ -340,7 +448,7 @@ def test_generation():
     # ios 만이면 swift 만
     root2 = to_locked(make_repo(), spec={**SPEC, "platforms": ["ios"]})
     files2 = gen.expected(root2, cfg, 1, design.scan(root2), api.validate(OPENAPI))
-    check("gen: 플랫폼 게이팅", all(f.endswith(".swift") for f in files2) and len(files2) == 3, sorted(files2))
+    check("gen: 플랫폼 게이팅", all(f.endswith(".swift") for f in files2) and len(files2) == 4, sorted(files2))
 
 
 def test_happy_cycle():
@@ -562,7 +670,7 @@ def test_hooks():
     check("hook: 미배선 레포는 통과", r.stdout.strip() == "")
 
 
-TESTS = [test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_flow_gates, test_generation, test_happy_cycle,
+TESTS = [test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_generation, test_happy_cycle,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks]
 

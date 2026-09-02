@@ -14,7 +14,7 @@ import re
 import subprocess
 import time
 
-from . import api, design, gen, git, leaks, util
+from . import api, derive, design, gen, git, leaks, util
 
 CODE_EXT = {".swift", ".kt", ".kts", ".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb",
             ".rs", ".cs", ".dart", ".m", ".mm", ".xml", ".yaml", ".yml", ".toml", ".json", ".sql"}
@@ -28,6 +28,8 @@ _DIM_RES = [
     re.compile(r"\bCGFloat\((\d+(?:\.\d+)?)\)"),
     re.compile(r"\bRoundedCornerShape\((\d+(?:\.\d+)?)"),
 ]
+_KO_LIT = re.compile(r"[\"'][^\"'\n]*[가-힣][^\"'\n]*[\"']")
+_FONT_RE = re.compile(r"(?:Font\.custom|fontFamily\s*=\s*FontFamily|FontFamily\(|Font\(name:)\s*\(?\s*[\"']([A-Za-z][\w -]*)[\"']")
 _SKIP_RE = re.compile(r"(@pytest\.mark\.skip|pytest\.skip|@unittest\.skip|XCTSkip|@Ignore\b|"
                       r"\.skip\(|\bxit\(|\bxdescribe\(|it\.skip|test\.skip|@Disabled\b|t\.Skip\()")
 
@@ -43,7 +45,10 @@ def targets(root):
         rs = []
     consts = gen.token_consts(m["tokens"])
     tokens = {k: {**v, "const": consts[k]} for k, v in m["tokens"].items()}
-    return {"routes": rs, "screens": m["screens"], "tokens": tokens}
+    icons = (derive.read(root, "icons.json") or {}).get("icons") or []
+    strings = (derive.read(root, "strings.json") or {}).get("strings") or []
+    rules = derive.read(root, "rules.json") or {}
+    return {"routes": rs, "screens": m["screens"], "tokens": tokens, "icons": icons, "strings": strings, "rules": rules}
 
 
 def items(role, t):
@@ -67,6 +72,13 @@ def items(role, t):
             out.append({"id": f"SCR-{i:0{w}d}", "kind": "screen", "label": s["title"], "const": const,
                         "rx": re.compile(re.escape(const) + r"\b|[\"']" + re.escape(s["id"]) + r"[\"']"),
                         "name": s["id"]})
+        icons = t.get("icons") or []
+        w = max(2, len(str(len(icons))))
+        for i, ic in enumerate(icons, 1):
+            const = f"Icons.{gen.ident(ic['name'])}"
+            out.append({"id": f"ICN-{i:0{w}d}", "kind": "icon", "label": ic["name"], "const": const,
+                        "rx": re.compile(re.escape(const) + r"\b|[\"']" + re.escape(ic["name"]) + r"[\"']"),
+                        "name": ic["name"]})
     return out
 
 
@@ -146,6 +158,8 @@ def hardcodes(tree, role_path, cfg, role, t):
         elif v["kind"] == "dimension":
             dims.setdefault(float(v["value"]), k)
     paths = [r["path"] for r in t["routes"]]
+    have_strings = bool(t.get("strings"))
+    fonts = [f.lower() for f in (t.get("rules") or {}).get("fonts") or []]
     out = []
     for rel, text in iter_code(tree, role_path, cfg, tests=False):
         if not rel.lower().endswith((".swift", ".kt", ".kts", ".java", ".dart", ".ts", ".tsx", ".js", ".jsx")):
@@ -168,6 +182,12 @@ def hardcodes(tree, role_path, cfg, role, t):
             for p in paths:
                 if f'"{p}"' in line or f"'{p}'" in line:
                     out.append({"file": rel, "line": ln, "kind": "raw-path", "token": None, "text": s[:120]})
+            if have_strings and _KO_LIT.search(line):
+                out.append({"file": rel, "line": ln, "kind": "raw-string", "token": "Strings.*", "text": s[:120]})
+            if fonts:
+                for fm in _FONT_RE.findall(line):
+                    if fm.lower() not in fonts and fm.lower() not in ("system", "systemui", "sans-serif", "monospace"):
+                        out.append({"file": rel, "line": ln, "kind": "raw-font", "token": "/".join(fonts), "text": s[:120]})
     # 같은 줄 중복 제거
     seen, uniq = set(), []
     for h in out:
