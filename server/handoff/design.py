@@ -360,7 +360,7 @@ def scan(root):
             continue                                                            # 인쇄용 변형은 화면이 아니다
         (boards if is_board(util.read_text(os.path.join(d, f))) else htmls).append(f)
     mds = [f for f in everything if f.lower().endswith(".md")]
-    chats = sorted(f for f in mds if is_chat(f))
+    chats = sorted(f for f in everything if is_chat(f) and f.lower().endswith((".md", ".json", ".txt")))
     docs = sorted((f for f in mds if f not in chats),
                   key=lambda f: (0 if os.path.basename(f).lower().startswith("readme") else 1, f))
     images = [f for f in everything if f.lower().endswith(IMG_EXT)]
