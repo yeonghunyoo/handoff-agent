@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""handoff 서버 런처 + 사람용 CLI.
+
+  python3 run.py                          # MCP 서버 (stdio) — .mcp.json 이 이것을 부른다
+  python3 run.py status   --root <레포>
+  python3 run.py setup    --root <레포>
+  python3 run.py review   --root <레포>    # 계약 확정 (tty 필수)
+  python3 run.py ship     --root <레포>    # 완료 승인 (tty 필수)
+  python3 run.py dashboard --root <레포> [--port 8790]   # 로컬 실시간 현황판 (읽기 전용)
+
+review · ship 은 elicitation 미지원 클라이언트의 폴백이다 — tty 에서만 받는다.
+"""
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+MCP_PIN = "mcp==2.1.1"
+
+
+def bootstrap_venv():
+    """mcp 가 없으면 server/.venv 를 만들어 갈아탄다. 안내는 stderr 로 (stdout 은 JSON-RPC 통로)."""
+    try:
+        import mcp  # noqa: F401
+        return
+    except ImportError:
+        pass
+    if os.environ.get("HANDOFF_BOOTSTRAPPED"):
+        print("mcp 를 못 찾았고 재기동도 실패했다 — server/.venv 를 지우고 다시 띄운다.", file=sys.stderr)
+        raise SystemExit(1)
+    if sys.version_info < (3, 10):
+        print("Python 3.10 이상이 필요하다.", file=sys.stderr)
+        raise SystemExit(1)
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    venv = os.path.join(here, ".venv")
+    py = os.path.join(venv, "bin", "python3")
+    if not os.path.isfile(py):
+        print("mcp 가 없다 — server/.venv 를 만든다 (최초 1회).", file=sys.stderr)
+        try:
+            subprocess.run([sys.executable, "-m", "venv", venv], check=True, stdout=sys.stderr.fileno())
+            subprocess.run([py, "-m", "pip", "install", "-q", MCP_PIN], check=True, stdout=sys.stderr.fileno())
+        except (subprocess.CalledProcessError, OSError) as e:
+            print(f"venv 생성 실패: {e}", file=sys.stderr)
+            raise SystemExit(1)
+    os.environ["HANDOFF_BOOTSTRAPPED"] = "1"
+    os.execv(py, [py, os.path.abspath(__file__), *sys.argv[1:]])
+
+
+def tty_approver(message, items):
+    if not sys.stdin.isatty():
+        print("승인은 tty 에서만 받는다 — 사람이 터미널에서 직접 실행한다.", file=sys.stderr)
+        raise SystemExit(3)
+    print("\n" + message + "\n")
+    ans = input("승인하시겠습니까? [y/N] ").strip().lower()
+    if ans in ("y", "yes"):
+        return {"approved": True, "reason": ""}
+    return {"approved": False, "reason": input("반려/보류 사유: ").strip()}
+
+
+def serve_dashboard(root, port):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from handoff import tools, util
+
+    def token():
+        parts = []
+        for p in (util.ho(root, util.STATE), util.ho(root, tools.LAST), util.api_path(root)):
+            try:
+                s = os.stat(p)
+                parts.append(f"{s.st_mtime_ns}:{s.st_size}")
+            except OSError:
+                parts.append("-")
+        return "|".join(parts)
+
+    poll = ("<script>const v0=document.documentElement.dataset.v;setInterval(async()=>{try{const r=await fetch('/state');"
+            "const j=await r.json();if(j.v!==v0)location.reload();}catch(e){}},2000);</script>")
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path == "/state":
+                body, ctype = json.dumps({"v": token()}), "application/json"
+            else:
+                cfg, st = tools._st(root)
+                tools._render(root, cfg, st)
+                html = util.read_text(os.path.join(root, util.DOCS_DIR, "handoff-dashboard.html"))
+                body = f'<!doctype html><html lang="ko" data-v="{token()}"><meta charset="utf-8">{html}{poll}</html>'
+                ctype = "text/html"
+            self.send_response(200)
+            self.send_header("Content-Type", ctype + "; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+
+    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    print(f"현황판: http://127.0.0.1:{port}  (읽기 전용 · Ctrl-C 로 종료)")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="handoff MCP 서버 · 사람용 CLI")
+    ap.add_argument("cmd", nargs="?", default="serve",
+                    choices=["serve", "status", "setup", "review", "ship", "dashboard"])
+    ap.add_argument("--root", default=None)
+    ap.add_argument("--port", type=int, default=8790)
+    args = ap.parse_args()
+    root = os.path.abspath(args.root or os.environ.get("HANDOFF_ROOT") or os.getcwd())
+
+    if args.cmd == "serve":
+        os.environ.setdefault("HANDOFF_ROOT", root)
+        bootstrap_venv()
+        from handoff import server
+        server.main()
+        return 0
+
+    from handoff import tools
+    if args.cmd == "dashboard":
+        return serve_dashboard(root, args.port)
+    if args.cmd == "setup":
+        out = tools.setup(root)
+    elif args.cmd == "status":
+        out = tools.status(root)
+        if out.get("ok"):
+            for s in out["steps"]:
+                print(("→" if s["current"] else "✓" if s["passed"] else "·"), s["label"])
+            for w in out["warnings"]:
+                print("!", w)
+    elif args.cmd == "review":
+        out = tools.review(root, approver=tty_approver)
+    else:
+        out = tools.ship(root, approver=tty_approver)
+    print(out.get("message") or json.dumps(out, ensure_ascii=False, indent=2))
+    return 0 if out.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
