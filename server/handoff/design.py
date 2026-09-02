@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import tarfile
 import zipfile
 
 from . import util
@@ -53,8 +54,10 @@ def import_package(root, src):
         shutil.copytree(src, tmp, ignore=shutil.ignore_patterns(".git", ".DS_Store", "__MACOSX"))
     elif zipfile.is_zipfile(src):
         _unzip(src, tmp)
+    elif tarfile.is_tarfile(src):
+        _untar(src, tmp)
     else:
-        raise DesignError(f"zip 도 디렉토리도 아니다: {src}")
+        raise DesignError(f"zip · tar.gz · 디렉토리 중 어느 것도 아니다: {src}")
     _collapse_single_dir(tmp)
     shutil.rmtree(dest, ignore_errors=True)
     os.replace(tmp, dest)
@@ -77,6 +80,27 @@ def _unzip(path, dest):
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with z.open(info) as s, open(target, "wb") as d:
                 shutil.copyfileobj(s, d)
+
+
+def _untar(path, dest):
+    os.makedirs(dest, exist_ok=True)
+    with tarfile.open(path) as t:
+        for m in t.getmembers():
+            name = m.name
+            if name.startswith("__MACOSX/") or os.path.basename(name) == ".DS_Store" or not (m.isfile() or m.isdir()):
+                continue
+            target = os.path.normpath(os.path.join(dest, name))
+            if not target.startswith(os.path.abspath(dest) + os.sep):
+                continue
+            if m.isdir():
+                os.makedirs(target, exist_ok=True)
+                continue
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            src = t.extractfile(m)
+            if src is None:
+                continue
+            with src, open(target, "wb") as d:
+                shutil.copyfileobj(src, d)
 
 
 def _collapse_single_dir(d):
@@ -123,6 +147,18 @@ def slug(name):
     if out[0].isdigit():
         out = "s" + out
     return out
+
+
+def stem_of(path):
+    """파일 이름 → 화면 이름 줄기. 'Order List.dc.html' → 'Order List' (.dc 는 Design Components 확장)."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    return stem[:-3] if stem.lower().endswith(".dc") else stem
+
+
+def is_chat(rel):
+    parts = rel.lower().replace("\\", "/").split("/")
+    return any(p in ("chat", "chats", "transcript", "transcripts", "conversation", "conversations") for p in parts[:-1]) \
+        or any(k in parts[-1] for k in ("chat", "transcript", "conversation"))
 
 
 def _text(html_fragment):
@@ -212,8 +248,11 @@ def scan(root):
         raise DesignError("design/ 가 없다 — 핸드오프 패키지를 먼저 가져온다")
     files = list(_walk(d))
     everything = list(_all_files(d))
-    htmls = [f for f in files if f.lower().endswith(HTML_EXT)]
-    docs = sorted((f for f in everything if f.lower().endswith(".md")),
+    htmls = [f for f in files if f.lower().endswith(HTML_EXT)
+             and not re.search(r"[-_. ](print|preview)$", stem_of(f), re.I)]   # 인쇄용 변형은 화면이 아니다
+    mds = [f for f in everything if f.lower().endswith(".md")]
+    chats = sorted(f for f in mds if is_chat(f))
+    docs = sorted((f for f in mds if f not in chats),
                   key=lambda f: (0 if os.path.basename(f).lower().startswith("readme") else 1, f))
     images = [f for f in everything if f.lower().endswith(IMG_EXT)]
 
@@ -227,7 +266,7 @@ def scan(root):
                 cand = [h for h in htmls if os.path.basename(h) == os.path.basename(f)]
                 f = cand[0] if cand else None
             if not f:
-                cand = [h for h in htmls if slug(os.path.splitext(os.path.basename(h))[0]) == s["id"]]
+                cand = [h for h in htmls if slug(stem_of(h)) == s["id"]]
                 f = cand[0] if cand else None
             screens.append({"id": s["id"], "file": f, "title": s["title"], "anchor": None})
     elif len(htmls) == 1:
@@ -242,11 +281,11 @@ def scan(root):
             seen.add(sid_slug)
             screens.append({"id": sid_slug, "file": htmls[0], "title": sid, "anchor": sid})
         if len(screens) < 2:
-            stem = os.path.splitext(os.path.basename(htmls[0]))[0]
+            stem = stem_of(htmls[0])
             screens = [{"id": slug(stem), "file": htmls[0], "title": _title_of(html, stem), "anchor": None}]
     else:
         for h in htmls:
-            stem = os.path.splitext(os.path.basename(h))[0]
+            stem = stem_of(h)
             if stem.lower() == "index" and len(htmls) > 1:
                 continue
             html = util.read_text(os.path.join(d, h))
@@ -279,7 +318,7 @@ def scan(root):
     for s in screens:
         by_stem[s["id"]] = s["id"]
         if s["file"]:
-            by_stem[slug(os.path.splitext(os.path.basename(s["file"]))[0])] = s["id"]
+            by_stem[slug(stem_of(s["file"]))] = s["id"]
     for im in images:
         stem = os.path.splitext(os.path.basename(im))[0]
         key = slug(stem.split("__")[0].split("@")[0])
@@ -288,10 +327,10 @@ def scan(root):
     for s in screens:
         s["shots"] = shots[s["id"]]
 
-    used = set(htmls) | set(docs) | set(images)
+    used = set(htmls) | set(docs) | set(chats) | set(images)
     assets = [f for f in everything if f not in used]
     return {"hash": util.tree_hash(d), "screens": screens, "tokens": tok,
-            "docs": docs, "assets": assets, "files": len(everything)}
+            "docs": docs, "chats": chats, "assets": assets, "files": len(everything)}
 
 
 def manifest(root):

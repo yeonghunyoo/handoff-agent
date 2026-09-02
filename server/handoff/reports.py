@@ -36,7 +36,8 @@ def plan_doc(root, cfg, st, routes):
     L += ["## 화면 (design/)", "", "| id | 제목 | 파일 | 스크린샷 |", "|---|---|---|---|"]
     for s in m.get("screens", []):
         L.append(f"| `{s['id']}` | {s['title']} | {s['file'] or '-'} | {len(s.get('shots') or [])} |")
-    L += ["", f"문서: {', '.join(f'`design/{d}`' for d in m.get('docs', [])) or '없음'}", ""]
+    L += ["", f"문서: {', '.join(f'`design/{d}`' for d in m.get('docs', [])) or '없음'}"
+          + (f" · 대화 기록: {', '.join(f'`design/{c}`' for c in m['chats'])}" if m.get("chats") else ""), ""]
     toks = m.get("tokens") or {}
     L += [f"## 토큰 ({len(toks)}개)", ""]
     if toks:
@@ -98,6 +99,8 @@ def kickoff(root, cfg, role, st, t, handoff):
          "## Read first (paths relative to the worktree)"]
     for d in m.get("docs", []):
         L.append(f"- design/{d}   (developer notes from the designer — follow them)")
+    for c in m.get("chats", [])[:5]:
+        L.append(f"- design/{c}   (the conversation that produced the design — intent lives here; decisions in it are binding)")
     if role != "backend":
         for s in m["screens"]:
             L.append(f"- design/{s['file']}" + (f"#{s['anchor']}" if s.get("anchor") else "")
