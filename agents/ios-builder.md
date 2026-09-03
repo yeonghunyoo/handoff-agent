@@ -197,8 +197,12 @@ Release hygiene:
 
 ## Build loop — do not boot a simulator to find a type error
 `-destination 'platform=iOS Simulator,name=<device>'` boots and holds a simulator for every build. While you are fixing
-compile errors you do not need one — a generic destination compiles the same code without it. Never hardcode a device
-model from an example; the exact names available here are in "This machine" (`xcrun simctl list devices available` if missing).
+compile errors you do not need one — a generic destination compiles the same code without it.
+
+Address a simulator by **UDID, not model name**: `-destination 'platform=iOS Simulator,id=<UDID>'`. "This machine" lists the
+UDIDs detected at dispatch. Name lookup resolves against whatever Xcode has ready at that instant and can fail with
+"no available devices matched the request" even when the device exists — an earlier loop lost a full build to exactly that.
+If a destination fails, run `xcrun simctl list devices available` and use a UDID from it; never guess a model name.
 
 ```bash
 # xcodegen-spm only, after any change to project.yml
@@ -208,9 +212,9 @@ xcodegen generate
 xcodebuild -project <App>.xcodeproj -scheme <App> \
   -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation build -quiet
 
-# tests: compile them once, then re-run without rebuilding
-xcodebuild -project <App>.xcodeproj -scheme <App> -destination 'platform=iOS Simulator,name=<device>' build-for-testing
-xcodebuild -project <App>.xcodeproj -scheme <App> -destination 'platform=iOS Simulator,name=<device>' test-without-building
+# tests: compile them once, then re-run without rebuilding (address by UDID)
+xcodebuild -project <App>.xcodeproj -scheme <App> -destination 'platform=iOS Simulator,id=<UDID>' build-for-testing
+xcodebuild -project <App>.xcodeproj -scheme <App> -destination 'platform=iOS Simulator,id=<UDID>' test-without-building
 ```
 
 xcodebuild regularly runs past two minutes, so background it and await it once — never poll:
@@ -221,7 +225,7 @@ until grep -qE "(BUILD SUCCEEDED|BUILD FAILED|error:)" build.log; do sleep 5; do
 
 ## Screenshots — last step only
 ```bash
-xcrun simctl boot "<device from This machine>" || true
+xcrun simctl boot <UDID from This machine> || true
 xcrun simctl install booted <path to .app in DerivedData>
 xcrun simctl launch booted <bundle id>
 xcrun simctl io booted screenshot .handoff/shots/<screenId>.png
