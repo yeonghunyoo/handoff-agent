@@ -73,4 +73,7 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 
 ### 플러그인 배선
 
+이 레포를 열면 `.mcp.json` 이 **프로젝트 MCP 서버**로도 잡히려 한다 — 그 파일은 플러그인 배선용(`${CLAUDE_PLUGIN_ROOT}`)이라 프로젝트 서버로는 명령이 깨져 연결 실패로 보인다. 그래서 `.claude/settings.json` 이 `disabledMcpjsonServers: ["handoff"]` 로 꺼 둔다. 여기서 쓰는 handoff 도구는 마켓플레이스 플러그인(`plugin:handoff:handoff`) 것이고, 로컬 수정은 `/plugin` 업데이트 → `/reload-plugins` 로 반영한다.
+
+
 `.claude-plugin/plugin.json` · `.mcp.json`(`run.py serve`) · `hooks/hooks.json`(PreToolUse → `guard.py`, 실패는 통과) · `skills/handoff`(유일한 진입 스킬) · `skills/claude-design`(웹 제품 연결 통로 안내) · `agents/*-builder.md`(구현 서브에이전트, `build` 의 프롬프트를 그대로 받는다 — 본문이 플랫폼 번역 플레이북이다: HTML/CSS→SwiftUI·Compose 매핑, UIKit·View 로 내려가는 기준, 프로젝트 구조별 규칙, 스토어 제출 필수 항목, 빌드·스크린샷 명령. 영어 명령문).

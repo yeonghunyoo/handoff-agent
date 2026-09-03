@@ -160,9 +160,11 @@ CLAUDE_SECTION = """## handoff 워크플로
 이 레포는 Claude Design 핸드오프 패키지로 iOS · Android · backend 를 한 번에 만든다. **개발 작업 전에 반드시
 MCP 도구 `status` 를 부르고 `next` 를 따른다.** 절차는 `/handoff` 스킬에 있다.
 
-- 순서: 패키지 등록 → 스펙·인프라 결정 → openapi → 계약 확정(사람) → 병렬 구현 → 검사 → 완료 승인(사람)
+- 순서: 패키지 등록 → 스펙·인프라 결정 → openapi → 계약 확정(사람) → 구현 → 검사 → 완료 승인(사람)
 - `design/` · `api/` · `shared/generated/` 는 직접 편집하지 않는다. 계약 변경은 `back` 으로 되돌아가 재승인.
 - 구현은 `.handoff/worktrees/<역할>` 안에서만 한다. 승인은 사람만 한다 (elicitation).
+- 구현 착수는 `build` 응답의 `dispatch` 를 따른다 — 기본은 **직렬**(한 번에 한 역할, report 를 받고 다음).
+  `.handoff/config.json` 의 `dispatch.mode` 를 `"parallel"` 로 바꾸면 동시 착수한다.
 """
 
 
@@ -409,8 +411,11 @@ def build(root):
             wt = util.worktree(root, r)
             info[r] = ("(워크트리 없음)" if not os.path.isdir(wt)
                        else git.run(wt, "status", "--porcelain", check=False).stdout.strip()[:1500])
+        plan = _dispatch_plan(cfg, pending)
         return {"ok": True, "resume": True, "pending": pending, "worktrees": info,
-                "message": f"이미 착수된 루프다 — 재착수가 아니라 이어간다. 리포트 미제출: {', '.join(pending) or '없음'}"}
+                "dispatch": plan,
+                "message": (f"이미 착수된 루프다 — 재착수가 아니라 이어간다. 리포트 미제출: {', '.join(pending) or '없음'}. "
+                            + _dispatch_note(plan))}
     dirty = git.dirty_main(root)
     if dirty:
         return _refuse("본선 작업트리에 미커밋 변경이 있다 — 워크트리가 낡은 계약을 물려받는다: " + ", ".join(dirty[:5]))
@@ -435,10 +440,31 @@ def build(root):
     _save(root, st, "dispatched", roles=roles, version=st["version"])
     cfg, st = _st(root)
     _docs(root, cfg, st)
-    return {"ok": True, "roles": roles, "worktrees": trees, "prompts": prompts,
+    plan = _dispatch_plan(cfg, roles)
+    return {"ok": True, "roles": roles, "worktrees": trees, "prompts": prompts, "dispatch": plan,
             "message": (f"워크트리 {len(roles)}개 준비 (계약 v{st['version']}, 생성 상수 {len(files)}개). "
-                        f"각 역할을 에이전트({', '.join(r + '-builder' for r in roles)})로 **병렬** 착수하되 prompts 의 "
-                        "해당 프롬프트를 번역·요약 없이 그대로 전달한다. 진행 중에는 관여하지 않는다.")}
+                        + _dispatch_note(plan)
+                        + " prompts 의 해당 프롬프트를 번역·요약 없이 그대로 전달한다. 진행 중에는 관여하지 않는다.")}
+
+
+def _dispatch_plan(cfg, roles):
+    """착수 순서와 방식. 기본은 직렬 — 한 기기에서 툴체인이 코어를 나눠 쓰면 모두가 느려진다."""
+    d = cfg.get("dispatch") or {}
+    mode = d.get("mode", "serial")
+    order = [r for r in (d.get("order") or util.ROLES) if r in roles]
+    order += [r for r in roles if r not in order]         # 설정에 없는 역할은 뒤에
+    return {"mode": mode, "order": order, "next": order[0] if order else None}
+
+
+def _dispatch_note(plan):
+    if not plan["order"]:
+        return "착수할 역할이 없다."
+    agents = ", ".join(r + "-builder" for r in plan["order"])
+    if plan["mode"] == "parallel":
+        return f"각 역할을 에이전트({agents})로 **병렬** 착수한다."
+    return (f"**직렬** 착수다 — 지금은 **{plan['next']}** 하나만 {plan['next']}-builder 로 띄운다. "
+            f"그 역할이 report 를 제출한 뒤에 다음을 띄운다 (순서: {' → '.join(plan['order'])}). "
+            "동시에 두 개를 띄우지 않는다 — 빌드가 코어를 나눠 쓰면 둘 다 느려진다.")
 
 
 def _prepare_worktree(root, role, files, version):

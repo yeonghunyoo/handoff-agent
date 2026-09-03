@@ -16,7 +16,7 @@ LABELS = {
     "spec": "② 스펙 · 인프라 결정",
     "api": "③ 백엔드 계약 (openapi.yaml)",
     "review": "④ 계약 확정 — 사람 승인",
-    "build": "⑤ 구현 (워크트리 병렬)",
+    "build": "⑤ 구현 (역할별 워크트리 — 기본 직렬)",
     "verify": "⑥ 검사",
     "ship": "⑦ 완료 승인 — 사람 승인",
     "done": "완료",
@@ -42,7 +42,7 @@ def next_action(st):
         if st.get("roles"):
             pending = [r for r in st["roles"] if r not in st.get("reports", [])]
             return f"구현 중 — 리포트 대기: {', '.join(pending) or '없음'} (각 에이전트가 precheck → report)"
-        return "build() — 워크트리를 만들고 착수 프롬프트를 받아 에이전트를 병렬로 띄운다"
+        return "build() — 워크트리를 만들고 착수 프롬프트를 받는다. 응답의 dispatch 대로 띄운다 (기본 직렬 — 한 번에 하나)"
     if p == "verify":
         return "verify() — 서버가 재검사해 점수와 loop/pass 를 판정한다"
     if p == "ship":

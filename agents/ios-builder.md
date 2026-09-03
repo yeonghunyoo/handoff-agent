@@ -18,7 +18,10 @@ token through `DesignTokens.*`. Screenshots saved to `<worktree>/.handoff/shots/
 the human's compare page.
 
 ## Non-negotiable
-- Work only inside the worktree, under your role path. Commit per unit of work.
+- Work only inside the worktree, under your role path. **Commit after every screen or component, and before any long build.**
+  Uncommitted work is lost the moment the session ends — an earlier loop lost a finished hour of code exactly this way.
+- **Never spend a turn waiting.** Long builds go `run_in_background: true` into a log file, and you wait with ONE until-loop.
+  `true`, `echo waiting` and repeated `tail` are not waiting strategies — they are wasted turns that bloat your context.
 - design/, api/, shared/generated/ are read-only. A wrong contract goes into `report.proposals`.
 - No secrets in code or history. Never open env files or key files.
 - Finish with `precheck(role="ios")` until PASS, then `report(role="ios", report=...)`.
@@ -31,8 +34,9 @@ the human's compare page.
 4. Build screens in navigation order: entry screen first, then tabs, then pushed screens, then overlays. Each screen is built from
    `design/derived/layout/<screenId>.json` (see "Layout tree" below) — never by re-reading the HTML and reconstructing it. One commit per screen or component.
 5. Wire ApiRoutes.* through one API client; seed previews and empty/offline states from entities.json.
-6. Write tests that reference the generated constants [T3]. Run the build and tests. Take screenshots.
-7. `precheck` → fix → `report`.
+6. Write tests that reference the generated constants [T3]. Iterate without booting a simulator (see "Build loop").
+7. Once, at the end: full simulator build → tests → screenshots.
+8. `precheck` → fix → `report`.
 
 ## Translation rules — design/ (HTML/CSS) → SwiftUI
 The prototype is web markup. Translate by these rules so iOS and Android read the same design the same way [P1].
@@ -191,20 +195,33 @@ Release hygiene:
 - No base URL, API key, or token in code; env values come from xcconfig with `.example` twins [S1].
 - Third-party dependencies through SPM only, versions pinned in `Package.resolved`.
 
-## Build · test · screenshot commands
-Pick a simulator that exists: `xcrun simctl list devices available | grep iPhone`. Use its name below (example: iPhone 16).
+## Build loop — do not boot a simulator to find a type error
+`-destination 'platform=iOS Simulator,name=<device>'` boots and holds a simulator for every build. While you are fixing
+compile errors you do not need one — a generic destination compiles the same code without it. Never hardcode a device
+model from an example; the exact names available here are in "This machine" (`xcrun simctl list devices available` if missing).
 
 ```bash
-# xcodegen-spm only
+# xcodegen-spm only, after any change to project.yml
 xcodegen generate
-# build
+
+# every cycle — compiles, no simulator boot
 xcodebuild -project <App>.xcodeproj -scheme <App> \
-  -destination 'platform=iOS Simulator,name=iPhone 16' -skipPackagePluginValidation build
-# tests
-xcodebuild -project <App>.xcodeproj -scheme <App> \
-  -destination 'platform=iOS Simulator,name=iPhone 16' test
-# screenshots (one per screen id, after navigating there)
-xcrun simctl boot "iPhone 16" || true
+  -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation build -quiet
+
+# tests: compile them once, then re-run without rebuilding
+xcodebuild -project <App>.xcodeproj -scheme <App> -destination 'platform=iOS Simulator,name=<device>' build-for-testing
+xcodebuild -project <App>.xcodeproj -scheme <App> -destination 'platform=iOS Simulator,name=<device>' test-without-building
+```
+
+xcodebuild regularly runs past two minutes, so background it and await it once — never poll:
+```bash
+xcodebuild ... build -quiet > build.log 2>&1        # run_in_background: true
+until grep -qE "(BUILD SUCCEEDED|BUILD FAILED|error:)" build.log; do sleep 5; done
+```
+
+## Screenshots — last step only
+```bash
+xcrun simctl boot "<device from This machine>" || true
 xcrun simctl install booted <path to .app in DerivedData>
 xcrun simctl launch booted <bundle id>
 xcrun simctl io booted screenshot .handoff/shots/<screenId>.png

@@ -12,10 +12,61 @@ import html
 import json
 import os
 import shutil
+import subprocess
 
 from . import checks, derive, flow, git, infra as infra_mod, leaks, util
 
 SCREENS_DIR = "handoff-screens"
+
+
+def _sh(cmd, timeout=15):
+    """탐지용 읽기 전용 명령. 없으면 빈 문자열 — 탐지 실패가 착수를 막지는 않는다."""
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def machine(role):
+    """이 기기에서 실제로 쓸 수 있는 것 — 빌더가 탐색하거나 문서의 예시를 베끼지 않게 한다.
+
+    이전 루프에서 빌더가 문서의 예시(`iPhone 16`)를 그대로 써서, 그 기기에 없는 시뮬레이터로
+    빌드를 한 번 통째로 날렸다. 이름은 추측이 아니라 여기서 온다.
+    """
+    L = []
+    if role == "ios":
+        sims = []
+        for line in _sh("xcrun simctl list devices available").splitlines():
+            line = line.strip()
+            if line.startswith("iPhone") and "(" in line:
+                name = line.split("(")[0].strip()
+                udid = line.split("(")[1].split(")")[0]
+                if name not in [s[0] for s in sims]:
+                    sims.append((name, udid))
+        if sims:
+            L.append("- iOS simulators available (use one of these EXACT names — do not invent a newer model): "
+                     + ", ".join(f"{n} [{u}]" for n, u in sims[:6]))
+        else:
+            L.append("- iOS simulators: none detected — if a build needs one, report `blocked` with the verbatim error")
+        L.append(f"- xcodebuild: {_sh('xcodebuild -version | head -1') or 'NOT FOUND'}"
+                 f" · xcodegen: {_sh('xcodegen version 2>/dev/null | head -1') or 'NOT INSTALLED (brew install xcodegen)'}")
+    elif role == "android":
+        sdk = os.environ.get("ANDROID_HOME") or os.path.expanduser("~/Library/Android/sdk")
+        avds = _sh(f'"{sdk}/emulator/emulator" -list-avds').splitlines()
+        L.append(f"- ANDROID_HOME: {sdk if os.path.isdir(sdk) else 'NOT FOUND — report blocked'}"
+                 + (" (export it yourself in every gradle command — it is not in the agent's environment)"
+                    if os.path.isdir(sdk) and not os.environ.get("ANDROID_HOME") else ""))
+        L.append("- AVDs available (use one of these EXACT names): " + (", ".join(a.strip() for a in avds if a.strip()) or "none detected"))
+        jdks = _sh("/usr/libexec/java_home -V 2>&1 | grep -E '^\\s+[0-9]' | sed 's/^ *//'").splitlines()
+        L.append("- JDKs installed: " + (" · ".join(j.split('"')[0].strip() for j in jdks) or "none detected"))
+        L.append("  AGP needs JDK 17. If no 17 is listed, either set a Gradle toolchain that can download it "
+                 "(`java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }` + foojay resolver) or report `blocked` — "
+                 "do not spend turns guessing brew cask names.")
+    free = _sh("df -h / | tail -1 | awk '{print $4}'")
+    if free:
+        L.append(f"- Free disk: {free} (Gradle caches and DerivedData eat GBs — if a build fails on space, report it, do not silently retry)")
+    return L
 
 
 def _esc(s):
@@ -241,7 +292,23 @@ def kickoff(root, cfg, role, st, t, handoff):
             if vals:
                 L.append(f"### {title}")
                 L += [f"- {json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v}" for v in vals[:15]]
-    L += ["", RULES, "## Finish",
+    mach = machine(role)
+    if mach:
+        L += ["", "## This machine (detected at dispatch — use these names, do not guess or copy an example)"] + mach
+    L += ["", "## Build loop — the slow part, keep it short",
+          "- The fix→build→fix loop must run the CHEAPEST target that surfaces the error. Full packaging, release/R8 builds, "
+          "lint and screenshots run ONCE at the end, not every cycle."
+          + ("  Iterate with `./gradlew :app:compileDebugKotlin`; `assembleDebug`, `assembleRelease`, `lintDebug` and the emulator come last."
+             if role == "android" else
+             "  Iterate with `xcodebuild -destination 'generic/platform=iOS Simulator' build -quiet` (no simulator boot); "
+             "`build-for-testing` once, then `test-without-building` per cycle; the simulator and screenshots come last."
+             if role == "ios" else ""),
+          "- Never burn turns waiting. A command that may exceed ~2 minutes goes `run_in_background: true` with its output to a log file; "
+          "then wait with ONE until-loop (`until grep -qE 'BUILD (SUCCESSFUL|FAILED)' <log>; do sleep 5; done`). "
+          "Do NOT poll with `true`, `echo waiting`, or repeated `tail` — each one is a wasted turn and grows your context.",
+          "- Commit after every screen or component, and before any long build [R3]. Work that is not committed is lost if the session ends — "
+          "an earlier loop lost a full hour of finished code this way. Never end a turn with uncommitted work you would not want to redo.",
+          "", RULES, "## Finish",
           f"1. precheck(role=\"{role}\") — fix every blocker, rerun until PASS [R1]",
           f"2. report(role=\"{role}\", report=...) with this shape:", REPORT_SHAPE,
           "The server fills version and hashes; do not send them. Wall-clock seconds are welcome.", ""]

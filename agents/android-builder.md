@@ -18,7 +18,10 @@ token through `DesignTokens.*`. Screenshots saved to `<worktree>/.handoff/shots/
 the human's compare page.
 
 ## Non-negotiable
-- Work only inside the worktree, under your role path. Commit per unit of work.
+- Work only inside the worktree, under your role path. **Commit after every screen or component, and before any long build.**
+  Uncommitted work is lost the moment the session ends — an earlier loop lost a finished hour of code exactly this way.
+- **Never spend a turn waiting.** Long builds go `run_in_background: true` into a log file, and you wait with ONE until-loop.
+  `true`, `echo waiting` and repeated `tail` are not waiting strategies — they are wasted turns that bloat your context.
 - design/, api/, shared/generated/ are read-only. A wrong contract goes into `report.proposals`.
 - No secrets in code or history. Never open env files or key files.
 - Finish with `precheck(role="android")` until PASS, then `report(role="android", report=...)`.
@@ -31,8 +34,9 @@ the human's compare page.
 4. Build screens in navigation order: entry screen first, then tabs, then pushed screens, then overlays. Each screen is built from
    `design/derived/layout/<screenId>.json` (see "Layout tree" below) — never by re-reading the HTML and reconstructing it. One commit per screen or component.
 5. Wire ApiRoutes.* through one API client; seed previews and empty/offline states from entities.json.
-6. Write tests that reference the generated constants [T3]. Run the build and tests. Take screenshots.
-7. `precheck` → fix → `report`.
+6. Write tests that reference the generated constants [T3]. Iterate with `compileDebugKotlin` only (see "Build loop").
+7. Once, at the end: `assembleDebug` → unit tests → `lintDebug` → `assembleRelease` → emulator screenshots.
+8. `precheck` → fix → `report`.
 
 ## Translation rules — design/ (HTML/CSS) → Jetpack Compose
 The prototype is web markup. Translate by these rules so iOS and Android read the same design the same way [P1].
@@ -176,18 +180,44 @@ Resources and appearance:
 Signing and release build:
 - `signingConfigs.release` reads `KEYSTORE_PATH`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD` from the environment; never a keystore or password in the repo [S2]. The keystore and Play App Signing enrollment go to `human_check`.
 - `applicationId` as a placeholder `com.example.<app>`, `versionCode 1`, `versionName "1.0.0"` → `applicationId` goes to `human_check`.
-- `release { isMinifyEnabled = true; isShrinkResources = true }` with `proguard-rules.pro` keep rules for serialization models and any reflection-based library. The release build must pass, not only debug [T1].
+- `release { isMinifyEnabled = true; isShrinkResources = true }` with `proguard-rules.pro` keep rules for serialization models and any reflection-based library. The release build must pass before you report [T1] — run it **once at the end**, not every cycle.
 - Native libraries (if any dependency ships them) must be 16 KB page-size compatible (required for new apps and updates targeting API 35+).
 - No `Log` of user data in release (`if (BuildConfig.DEBUG)`).
 - Output for Play is an App Bundle: `./gradlew :app:bundleRelease`.
 
-## Build · test · screenshot commands
+## Build loop — cheapest target first
+A full `assembleDebug` packages, dexes and (in release) runs R8. None of that finds a Kotlin type error.
+Iterate on the compile task alone and you cut each cycle to a fraction:
+
 ```bash
-./gradlew :app:assembleDebug                 # build
-./gradlew :app:testDebugUnitTest             # unit tests
-./gradlew :app:lintDebug                     # lint — fix errors, report warnings you leave
-./gradlew :app:assembleRelease               # release must build too (R8 rules)
-# screenshots (needs a running emulator: `emulator -list-avds`, `emulator -avd <name> &`, `adb wait-for-device`)
+# every cycle — compile errors only, no packaging
+./gradlew :app:compileDebugKotlin
+# once, at the end
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:assembleRelease
+```
+
+Put these in `gradle.properties` before the first build — they are the difference between a 2-minute and a 20-second rebuild:
+```properties
+org.gradle.parallel=true
+org.gradle.caching=true
+org.gradle.configuration-cache=true
+org.gradle.jvmargs=-Xmx3g -XX:+UseParallelGC
+kotlin.incremental=true
+```
+
+Gradle needs `ANDROID_HOME` exported in the same command — it is not in your environment. Any build over ~2 minutes goes to the
+background and is awaited once, never polled:
+```bash
+export ANDROID_HOME=<the path in "This machine">
+./gradlew :app:compileDebugKotlin > build.log 2>&1     # run_in_background: true
+until grep -qE "BUILD (SUCCESSFUL|FAILED)" build.log; do sleep 5; done
+```
+
+## Screenshots — last step only
+Use an AVD name from "This machine" (`emulator -list-avds` if it is missing), never an invented one.
+```bash
+"$ANDROID_HOME/emulator/emulator" -avd <name> -no-window -no-audio -no-boot-anim &
+adb wait-for-device
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n <applicationId>/.MainActivity
 adb exec-out screencap -p > .handoff/shots/<screenId>.png

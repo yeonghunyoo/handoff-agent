@@ -40,6 +40,9 @@ DEFAULTS = {
         "divergence_penalty": 10,
     },
     "verify": {"commands": {"backend": [], "ios": [], "android": []}, "timeout_sec": 600},
+    # 착수 방식. serial 이 기본이다 — iOS·Android 툴체인을 한 기기에서 동시에 돌리면 코어를 나눠 써서
+    # 각 빌드가 느려지고, 한쪽이 막히면 세션 전체가 길어진다. 코어가 넉넉하면 "parallel" 로 바꾼다.
+    "dispatch": {"mode": "serial", "order": ["backend", "ios", "android"]},
     "test_globs": [
         "**/test_*.py", "**/*_test.py", "**/tests/**/*.py",
         "**/*.test.ts", "**/*.test.tsx", "**/*.test.js", "**/*.spec.ts", "**/*.spec.js",
