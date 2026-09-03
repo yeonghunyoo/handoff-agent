@@ -36,7 +36,7 @@ python3 server/run.py unbundle <standalone.html> <폴더>
 
 ```
 server.py (MCP, 도구 13개)  ─┐
-run.py    (CLI · 런처)       ─┴→ tools.py (순수 함수) → flow · design · derive · api · gen · checks · score · reports · git · util
+run.py    (CLI · 런처)       ─┴→ tools.py (순수 함수) → flow · design · derive · api · infra · gen · checks · score · reports · git · util
 hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 ```
 
@@ -71,4 +71,4 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 
 ### 플러그인 배선
 
-`.claude-plugin/plugin.json` · `.mcp.json`(`run.py serve`) · `hooks/hooks.json`(PreToolUse → `guard.py`, 실패는 통과) · `skills/handoff`(유일한 진입 스킬) · `skills/claude-design`(웹 제품 연결 통로 안내) · `agents/*-builder.md`(구현 서브에이전트, `build` 의 프롬프트를 그대로 받는다).
+`.claude-plugin/plugin.json` · `.mcp.json`(`run.py serve`) · `hooks/hooks.json`(PreToolUse → `guard.py`, 실패는 통과) · `skills/handoff`(유일한 진입 스킬) · `skills/claude-design`(웹 제품 연결 통로 안내) · `agents/*-builder.md`(구현 서브에이전트, `build` 의 프롬프트를 그대로 받는다 — 본문이 플랫폼 번역 플레이북이다: HTML/CSS→SwiftUI·Compose 매핑, UIKit·View 로 내려가는 기준, 프로젝트 구조별 규칙, 스토어 제출 필수 항목, 빌드·스크린샷 명령. 영어 명령문).

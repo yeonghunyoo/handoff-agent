@@ -12,7 +12,7 @@ import json
 import os
 import shutil
 
-from . import checks, derive, flow, git, leaks, util
+from . import checks, derive, flow, git, infra as infra_mod, leaks, util
 
 SCREENS_DIR = "handoff-screens"
 
@@ -63,10 +63,29 @@ def plan_doc(root, cfg, st, routes):
     L += ["", "## 스펙 (사람이 결정)", ""]
     L.append(f"- 플랫폼: {', '.join(spec.get('platforms') or [])}")
     L.append(f"- 스택: {json.dumps(spec.get('stack') or {}, ensure_ascii=False)}")
-    L.append(f"- 인프라: {json.dumps(spec.get('infra') or {}, ensure_ascii=False)}")
+    infra = dict(spec.get("infra") or {})
+    pricing = infra.pop("pricing", None)
+    L.append(f"- 인프라: {json.dumps(infra, ensure_ascii=False)}")
     if spec.get("divergences"):
         L.append(f"- 승인된 iOS/Android 차이: {', '.join(map(str, spec['divergences']))}")
+    for row in _pricing_rows(pricing, infra.get("scale")):
+        L.append(row)
     return _write(root, "handoff-plan.md", "\n".join(L) + "\n")
+
+
+def _pricing_rows(pricing, sid):
+    """사람이 고를 때 본 요금표 (infra.pricing) — md 표. 없으면 빈 목록."""
+    if not isinstance(pricing, dict) or not isinstance(pricing.get("combos"), dict):
+        return []
+    out = ["", f"### 요금 확인 {pricing.get('checked') or '?'} ({infra_mod.COST_UNIT})", "",
+           "| 조합 | 소규모 | 중규모 이상 | 출처 |", "|---|---|---|---|"]
+    for cid, row in pricing["combos"].items():
+        if not isinstance(row, dict):
+            continue
+        c = infra_mod.combo(cid)
+        out.append(f"| {c['label'] if c else cid} | {row.get('small', '-')} | {row.get('medium_plus', '-')} | "
+                   + " ".join(f"<{u}>" for u in (row.get("sources") or [])) + " |")
+    return out
 
 
 # ─────────────────────────── 착수 프롬프트 (영어) ───────────────────────────
@@ -119,6 +138,12 @@ def kickoff(root, cfg, role, st, t, handoff):
         L.append("- design/handoff.manifest.json   (the full index: screens with their components/strings/icons, typed components, navigation graph, initial state, entity summary)")
     if os.path.isfile(os.path.join(dv, "components.json")) and role != "backend":
         L.append("- design/derived/components.json + navigation.json   (every interactive element typed — sheet/modal/popover/tab/button/toggle/input/slider/item/gesture — and the entry screen, tabs, transitions)")
+    if os.path.isfile(os.path.join(dv, "rules.json")) and role != "backend":
+        r = derive.read(root, "rules.json") or {}
+        L.append("- design/derived/rules.json   (the prototype's lint rules — "
+                 + ("no hex colors; " if r.get("no_hex") else "") + ("no raw px; " if r.get("no_px") else "")
+                 + (f"allowed font families: {', '.join(r['fonts'])}; " if r.get("fonts") else "")
+                 + "tokens and Strings.* are mandatory [C3])")
     if os.path.isfile(os.path.join(dv, "strings.json")) and role != "backend":
         L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3])")
     if os.path.isfile(os.path.join(dv, "icons.json")) and role != "backend":
@@ -166,6 +191,15 @@ def kickoff(root, cfg, role, st, t, handoff):
     if role == "backend":
         L.append(f"- Backend stack: {stack.get('backend')}")
         L.append(f"- Infra: db={infra.get('db')} · auth={infra.get('auth')} · hosting={infra.get('hosting')}")
+        sc = infra_mod.scale(infra.get("scale"))
+        if sc:
+            L.append(f"- Expected scale: {sc['en']} (MAU {infra.get('mau') or sc['mau']} · DAU {infra.get('dau') or sc['dau']})"
+                     f" — build for this: {sc['build']}")
+        if infra.get("cost"):
+            basis = (f"checked {infra['cost_checked']}" if infra.get("cost_checked")
+                     else f"built-in estimate from {infra.get('cost_basis') or infra_mod.COST_BASIS}, not re-checked")
+            L.append(f"- Monthly cost band the human accepted: {infra['cost']} ({basis}) — do not add paid services beyond the chosen "
+                     "db/auth/hosting; anything extra goes into report.human_check with its price")
         if infra.get("env_vars"):
             L.append(f"- Env vars to expect (create .env.example with placeholders): {', '.join(map(str, infra['env_vars']))}")
         if infra.get("notes"):
@@ -395,11 +429,26 @@ def dashboard(root, cfg, st, routes=None, result=None, handoff=None):
     P.append(f"<li>플랫폼: {_esc(', '.join(spec.get('platforms') or []) or '-')}</li>")
     for k, v in (spec.get("stack") or {}).items():
         P.append(f"<li>스택 {_esc(k)}: {_esc(v)}</li>")
+    pricing = None
     for k, v in (spec.get("infra") or {}).items():
+        if k == "pricing":
+            pricing = v
+            continue
         P.append(f"<li>인프라 {_esc(k)}: {_esc(json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v)}</li>")
     if spec.get("divergences"):
         P.append(f"<li>승인된 플랫폼 차이: {_esc(', '.join(map(str, spec['divergences'])))}</li>")
     P.append("</ul>")
+    if isinstance(pricing, dict) and isinstance(pricing.get("combos"), dict):
+        P.append(f"<h3>요금 확인 {_esc(pricing.get('checked') or '?')} <span class=meta>{_esc(infra_mod.COST_UNIT)}</span></h3>")
+        P.append("<table><tr><th>조합</th><th>소규모</th><th>중규모 이상</th><th>출처</th></tr>")
+        for cid, row in pricing["combos"].items():
+            if not isinstance(row, dict):
+                continue
+            c = infra_mod.combo(cid)
+            links = " ".join(f'<a href="{_esc(u)}">{_esc(u.split("//")[-1].split("/")[0])}</a>' for u in (row.get("sources") or []))
+            P.append(f"<tr><td>{_esc(c['label'] if c else cid)}</td><td>{_esc(row.get('small', '-'))}</td>"
+                     f"<td>{_esc(row.get('medium_plus', '-'))}</td><td>{links}</td></tr>")
+        P.append("</table>")
 
     # 검사
     if result:

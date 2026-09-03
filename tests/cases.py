@@ -16,7 +16,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "server"))
 
-from handoff import api, checks, derive, design, flow, gen, git, leaks, score, tools, util  # noqa: E402
+from handoff import api, checks, derive, design, flow, gen, git, infra, leaks, score, tools, util  # noqa: E402
 
 APPROVE = lambda m, i: {"approved": True, "reason": ""}          # noqa: E731
 REJECT = lambda m, i: {"approved": False, "reason": "빠진 라우트"}  # noqa: E731
@@ -38,7 +38,8 @@ paths:
 
 SPEC = {"platforms": ["ios", "android"], "stack": {"backend": "fastapi", "ios_project": "xcodegen-spm",
                                                     "android_project": "gradle-modular"},
-        "infra": {"db": "postgres (supabase)", "auth": "supabase auth", "hosting": "fly.io",
+        "infra": {"scale": "small", "mau": 3000, "dau": 300,
+                  "db": "postgres (supabase)", "auth": "supabase auth", "hosting": "fly.io",
                   "env_vars": ["DATABASE_URL", "SUPABASE_KEY"]}}
 
 FAILS = []
@@ -398,6 +399,7 @@ def test_derive():
     p = r["prompts"]["ios"]
     check("derive: 프롬프트 — intent 먼저 · ICN 항목 · Strings/Icons", "design/derived/intent.md" in p and "ICN-01" in p and "Icons.tabHome" in p
           and "Strings.swift, Icons.swift" in p, p[:1500])
+    check("derive: 프롬프트 — rules.json (앱만)", "design/derived/rules.json" in p and "design/derived/rules.json" not in r["prompts"]["backend"], p[:1500])
     check("derive: 프롬프트 — 컴포넌트(타입) 목록 · 매니페스트", "## Components" in p and "tab      `setTabHome` — 홈 (in shared; handler setTabHome; → home)" in p
           and "design/handoff.manifest.json" in p and "button   `skipOnboarding` — 건너뛰기 버튼" in p, p)
     check("derive: 대시보드 — 컴포넌트 표", "컴포넌트 — 5개 (사람 확정)" in open(os.path.join(root, "docs", "handoff-dashboard.html"), encoding="utf-8").read())
@@ -424,7 +426,7 @@ def test_flow_gates():
     tools.import_design(root, pkg)
     r = tools.spec_save(root, {"platforms": ["ios"]})
     check("flow: 스펙 부분 저장", r.get("draft") and any("stack.backend" in p for p in r["remaining"]), r)
-    r = tools.spec_save(root, {"stack": {"backend": "fastapi"}, "infra": {"db": "pg", "auth": "jwt", "hosting": "fly"}})
+    r = tools.spec_save(root, {"stack": {"backend": "fastapi"}, "infra": {"scale": "small", "db": "pg", "auth": "jwt", "hosting": "fly"}})
     check("flow: 누적 후 확정", r["ok"] and not r.get("draft") and r["spec"]["platforms"] == ["ios"], r)
     r = tools.api_submit(root, "nope: 1")
     check("flow: 깨진 openapi 거부", not r["ok"] and not os.path.exists(util.api_path(root)))
@@ -451,6 +453,69 @@ def test_flow_gates():
     r = tools.back(root, "spec", "인프라 바꿈")
     check("flow: back → spec", r["ok"] and flow.current(root, util.load_config(root))["phase"] == "spec")
     check("flow: back 은 앞으로 못 감", not tools.back(root, "build", "x")["ok"])
+
+
+def test_infra():
+    check("infra: scale_of 경계", infra.scale_of(3000, 300) == "small" and infra.scale_of(10_000, 1_000) == "small"
+          and infra.scale_of(10_001, 10) == "medium_plus" and infra.scale_of(100, 5000) == "medium_plus")
+    check("infra: scale_of 표기", infra.scale_of("12,000", None) == "medium_plus" and infra.scale_of("3k", "0.2k") == "small"
+          and infra.scale_of(None, None) is None and infra.scale_of("많음", None) is None)
+    ids = [c["id"] for c in infra.COMBOS]
+    check("infra: 조합 카탈로그", len(ids) >= 10 and len(set(ids)) == len(ids)
+          and all(set(c["cost"]) == {"small", "medium_plus"} and c["db"] and c["auth"] and c["hosting"] and c["fit"] for c in infra.COMBOS))
+    cat = infra.catalog()
+    check("infra: 규모 없으면 두 비용 다", cat["scale"] is None and isinstance(cat["combos"][0]["cost"], dict) and len(cat["scales"]) == 2)
+    cat = infra.catalog("medium_plus")
+    rec = [c["recommended"] for c in cat["combos"]]
+    check("infra: 규모별 정렬 — 추천 먼저", rec == sorted(rec, reverse=True) and isinstance(cat["combos"][0]["cost"], str)
+          and any(c["id"] == "aws-classic" and c["recommended"] for c in cat["combos"]), cat["combos"][:3])
+    root = make_repo()
+    tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
+    s = tools.status(root)
+    check("infra: status 에 카탈로그", s["infra_options"] and s["infra_options"]["scale"] is None and len(s["infra_options"]["combos"]) >= 10)
+    r = tools.spec_save(root, {"platforms": ["ios"], "stack": {"backend": "fastapi"}, "infra": {"mau": 50000, "dau": 4000}})
+    check("infra: mau/dau → scale", r["draft"] and r["draft_spec"]["infra"]["scale"] == "medium_plus"
+          and not any("infra.scale" in p for p in r["remaining"]) and r["infra_options"]["scale"] == "medium_plus", r)
+    s = tools.status(root)
+    check("infra: status 카탈로그가 규모를 따른다", s["infra_options"]["scale"] == "medium_plus" and s["infra_options"]["combos"][0]["recommended"])
+    r = tools.spec_save(root, {"infra": {"combo": "nope"}})
+    check("infra: 없는 combo 거부", r["draft"] and any("infra.combo" in p for p in r["remaining"]) and r["draft_spec"]["infra"]["mau"] == 50000, r)
+    r = tools.spec_save(root, {"infra": {"combo": "supabase-fly", "db": "PostgreSQL (Neon)"}})
+    i = r["spec"]["infra"]
+    check("infra: combo 펼침 — 사람 값은 안 덮는다", r["ok"] and not r.get("draft") and i["db"] == "PostgreSQL (Neon)"
+          and i["auth"] == "Supabase Auth" and i["hosting"] == "Fly.io" and i["cost"] == "$60–300" and i["scale"] == "medium_plus"
+          and i["mau"] == 50000, i)
+    check("infra: env_vars 만 따로 저장해도 누적", tools.spec_save(root, {"infra": {"env_vars": ["DATABASE_URL"]}})["spec"]["infra"]["db"] == "PostgreSQL (Neon)")
+    check("infra: 폴백으로 고르면 표시", i.get("cost_basis") == infra.COST_BASIS and not i.get("cost_checked") and i["cost_sources"], i)
+    # 요금은 매번 새로 — pricing 저장 전엔 경고 + 폴백, 저장 후엔 확인일·출처
+    root = make_repo()
+    tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
+    s = tools.status(root)
+    check("pricing: 조회 전 경고", any("요금" in w for w in s["warnings"]) and s["infra_options"]["fresh"] == 0
+          and s["infra_options"]["stale"] == len(infra.COMBOS) and s["infra_options"]["services"]["supabase"].startswith("https://")
+          and all(r.get("cost_basis") == infra.COST_BASIS and r["sources"] for r in s["infra_options"]["combos"]), s["warnings"])
+    bad = tools.spec_save(root, {"platforms": ["ios"], "infra": {"pricing": {"checked": "어제", "combos": {"nope": {"small": "$1"}}}}})
+    check("pricing: 모양 검사", bad["draft"] and sum("infra.pricing" in p for p in bad["remaining"]) == 2, bad["remaining"])
+    pr = {"checked": "2026-09-03", "combos": {"supabase-fly": {"small": "$0–25", "medium_plus": "$75–350",
+                                                                "sources": ["https://supabase.com/pricing", "https://fly.io/pricing/"], "note": "compute-hours"}}}
+    r = tools.spec_save(root, {"infra": {"pricing": pr, "mau": 200, "dau": 20}})
+    rows = {c["id"]: c for c in r["infra_options"]["combos"]}
+    check("pricing: 저장 후 표에 반영", not any("infra.pricing" in p for p in r["remaining"]) and r["infra_options"]["fresh"] == 1
+          and rows["supabase-fly"]["cost"] == "$0–25" and rows["supabase-fly"]["cost_checked"] == "2026-09-03"
+          and rows["supabase-fly"]["cost_note"] == "compute-hours" and rows["railway"].get("cost_basis") == infra.COST_BASIS, rows["supabase-fly"])
+    s = tools.status(root)
+    check("pricing: 경고 해제", not any("요금" in w for w in s["warnings"]) and s["infra_options"]["cost_checked"] == "2026-09-03", s["warnings"])
+    r = tools.spec_save(root, {"stack": {"backend": "fastapi"}, "infra": {"combo": "supabase-fly"}})
+    i = r["spec"]["infra"]
+    check("pricing: 고른 조합의 비용은 조회값", r["ok"] and i["cost"] == "$0–25" and i["cost_checked"] == "2026-09-03"
+          and i["cost_sources"] == pr["combos"]["supabase-fly"]["sources"] and "cost_basis" not in i, i)
+    tools.api_submit(root, OPENAPI); tools.review(root, approver=APPROVE)
+    r = tools.build(root)
+    check("pricing: 착수 프롬프트에 확인일", "$0–25 (checked 2026-09-03)" in r["prompts"]["backend"], r["prompts"]["backend"][:1500])
+    plan = open(os.path.join(root, "docs", "handoff-plan.md"), encoding="utf-8").read()
+    dash = open(os.path.join(root, "docs", "handoff-dashboard.html"), encoding="utf-8").read()
+    check("pricing: 문서에 요금표", "요금 확인 2026-09-03" in plan and "| Supabase + Fly.io | $0–25 | $75–350 |" in plan
+          and "요금 확인 2026-09-03" in dash and "supabase.com" in dash and '"pricing"' not in dash, plan[-600:])
 
 
 def test_generation():
@@ -492,6 +557,8 @@ def test_happy_cycle():
     check("build: 프롬프트 내용", "SCR-01" in p and "ApiRoutes.getOrders" in p and "design/order-list.html" in p
           and "design/README.md" in p and "Project structure: xcodegen-spm" in p and "W1 [BLOCK]" in p, p)
     check("build: backend 프롬프트에 인프라", "db=postgres (supabase)" in r["prompts"]["backend"] and "DATABASE_URL" in r["prompts"]["backend"])
+    check("build: backend 프롬프트에 규모", "Expected scale: small (MAU 3000 · DAU 300)" in r["prompts"]["backend"]
+          and "Expected scale" not in r["prompts"]["ios"], r["prompts"]["backend"][:1500])
     for role in ("backend", "ios", "android"):
         ext = {"backend": None, "ios": ".swift", "android": ".kt"}[role]
         g = os.path.join(wt(root, role), "shared", "generated")
@@ -733,7 +800,7 @@ def test_hooks():
     check("hook: 미배선 레포는 통과", r.stdout.strip() == "")
 
 
-TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_generation, test_happy_cycle,
+TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks]
 

@@ -8,6 +8,7 @@ state.json 은 서버만 쓴다. 그래도 믿지 않는다: 승인(잠금) 뒤 
 import os
 
 from . import design, util
+from . import infra as infra_mod
 
 PHASES = ["import", "spec", "api", "review", "build", "verify", "ship", "done"]
 LABELS = {
@@ -60,9 +61,14 @@ def spec_problems(spec):
     if not stack.get("backend"):
         out.append("stack.backend 가 비었다 (사람이 고른다 — 후보를 비교해 보이고 선택을 받는다)")
     infra = spec.get("infra") if isinstance(spec.get("infra"), dict) else {}
+    if infra.get("combo") and not infra_mod.combo(infra["combo"]):
+        out.append(f"infra.combo '{infra['combo']}' 는 카탈로그에 없다 (status.infra_options 의 id 를 쓰거나 db/auth/hosting 을 직접 적는다)")
+    out += infra_mod.pricing_problems(infra.get("pricing"))
+    if not infra_mod.scale(infra.get("scale")):
+        out.append("infra.scale 가 비었다 (small | medium_plus — 예상 MAU·DAU 를 물어 정한다; infra.mau/dau 숫자를 주면 서버가 정한다)")
     for k in ("db", "auth", "hosting"):
         if not infra.get(k):
-            out.append(f"infra.{k} 가 비었다 (결정만 기록한다 — 무엇을 쓸지)")
+            out.append(f"infra.{k} 가 비었다 (결정만 기록한다 — 무엇을 쓸지; status.infra_options 의 조합을 비용과 함께 보이고 고르게 한다)")
     return out
 
 

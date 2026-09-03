@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 
-from . import api, checks, derive, design, flow, gen, git, leaks, reports, score, util
+from . import api, checks, derive, design, flow, gen, git, infra, leaks, reports, score, util
 
 DRAFT = "spec.draft.json"
 LAST = "last-verify.json"
@@ -81,10 +81,15 @@ def status(root):
         hints = design.readme_hints(root, st["manifest"])
         if hints:
             st["hints"] = hints
+        d_infra = ((draft or {}).get("infra") or {}) if isinstance(draft, dict) else {}
+        st["infra_options"] = infra.catalog(d_infra.get("scale"), d_infra.get("pricing"))
+        if not st["infra_options"]["fresh"]:
+            st["warnings"].append(f"인프라 요금이 아직 조회되지 않았다 (내장 폴백 {infra.COST_BASIS} 기준) — "
+                                  "infra_options.services 의 요금 페이지를 읽어 infra.pricing 으로 저장한 뒤 표를 보인다")
     out = {"ok": True, "wired": True, "phase": st["phase"], "label": st["label"], "version": st["version"],
            "cycle": st["cycle"], "human": st["human"], "next": st["next"], "warnings": st["warnings"],
            "fingerprint": st["fingerprint"], "roles": st.get("roles"), "reports": st.get("reports"),
-           "steps": steps, "hints": st.get("hints"),
+           "steps": steps, "hints": st.get("hints"), "infra_options": st.get("infra_options"),
            "message": f"{st['label']} · 계약 v{st['version']} · 지문 [{st['fingerprint']}]\n다음: {st['next']}"}
     if st["manifest"]:
         m = st["manifest"]
@@ -206,11 +211,19 @@ def spec_save(root, spec):
         return _refuse(why)
     base = util.read_spec(root) if st["phase"] != "spec" else (util.read_json(util.ho(root, DRAFT)) or {})
     merged = {**(base or {}), **(spec if isinstance(spec, dict) else {})}
+    if isinstance(spec, dict) and isinstance(spec.get("infra"), dict) and isinstance((base or {}).get("infra"), dict):
+        merged["infra"] = {**base["infra"], **spec["infra"]}   # 인프라는 항목 단위로 누적 (mau → combo → env_vars …)
+    if isinstance(spec, dict) and isinstance(spec.get("stack"), dict) and isinstance((base or {}).get("stack"), dict):
+        merged["stack"] = {**base["stack"], **spec["stack"]}
+    merged["infra"] = infra.expand(merged.get("infra"))
     problems = flow.spec_problems(merged)
     if problems:
         util.write_json(util.ho(root, DRAFT), merged)
-        return {"ok": True, "draft": True, "remaining": problems,
-                "message": "임시 저장 — 남은 항목만 이어서 묻는다:\n" + "\n".join(f"  · {p}" for p in problems)}
+        d_infra = merged.get("infra") if isinstance(merged.get("infra"), dict) else {}
+        return {"ok": True, "draft": True, "remaining": problems, "draft_spec": merged,
+                "infra_options": infra.catalog(d_infra.get("scale"), d_infra.get("pricing")) if any(p.startswith("infra.") for p in problems) else None,
+                "message": "임시 저장 — 남은 항목만 이어서 묻는다:\n" + "\n".join(f"  · {p}" for p in problems)
+                + (f"\n규모 {d_infra['scale']} 기준 인프라 조합을 infra_options 에 실었다 — 비용 구간과 함께 표로 보이고 고르게 한다." if d_infra.get("scale") and any(p.startswith("infra.") for p in problems) else "")}
     merged = leaks.mask_deep(merged)
     merged["platforms"] = [p for p in util.APPS if p in [str(x).lower() for x in merged["platforms"]]]
     util.write_json(util.ho(root, util.SPEC), merged)
