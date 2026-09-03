@@ -56,7 +56,7 @@ ID(`W1` `C2` `S1`…)로 인용된다. 서버 거부 메시지는 같은 ID 를 
 | `server/handoff/checks.py` | 실측 (소비 · 하드코딩 · 파리티 · 위반 · 테스트 · 시크릿) |
 | `server/handoff/score.py` | 판정 · 예외 항목 · 인계 |
 | `server/handoff/flow.py` | 단계 · 실측 대조 |
-| `server/handoff/infra.py` | 인프라 후보 카탈로그 (규모 · 조합 · 요금 페이지 출처) — 요금은 스킬이 매번 새로 읽어 `infra.pricing` 으로 저장, 내장 구간은 폴백. 고르는 것은 사람 |
+| `server/handoff/infra.py` | 인프라 후보 카탈로그 (규모 · 조합 · 요금 페이지 출처) — 규모가 먼저다: 규모별 후보 `SHORTLIST` 4~5개만 표에 오르고, 요금은 스킬이 그 후보의 페이지만 매번 새로 읽어 `infra.pricing` 으로 저장, 내장 구간은 폴백. 고르는 것은 사람 |
 | `server/handoff/reports.py` | 착수 프롬프트 · md · 대시보드 · 화면 대조 |
 | `server/handoff/tools.py` | 도구 (MCP 무관) |
 | `server/handoff/server.py` | MCP 계층 — `mcp` 를 import 하는 유일한 파일 |

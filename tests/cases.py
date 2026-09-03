@@ -464,20 +464,29 @@ def test_infra():
     check("infra: 조합 카탈로그", len(ids) >= 10 and len(set(ids)) == len(ids)
           and all(set(c["cost"]) == {"small", "medium_plus"} and c["db"] and c["auth"] and c["hosting"] and c["fit"] for c in infra.COMBOS))
     cat = infra.catalog()
-    check("infra: 규모 없으면 두 비용 다", cat["scale"] is None and isinstance(cat["combos"][0]["cost"], dict) and len(cat["scales"]) == 2)
+    check("infra: 규모 없으면 조합도 요금 페이지도 없다 — 규모부터", cat["scale"] is None and cat["combos"] == [] and cat["services"] == {}
+          and "규모" in cat["note"] and len(cat["scales"]) == 2)
     cat = infra.catalog("medium_plus")
-    rec = [c["recommended"] for c in cat["combos"]]
-    check("infra: 규모별 정렬 — 추천 먼저", rec == sorted(rec, reverse=True) and isinstance(cat["combos"][0]["cost"], str)
-          and any(c["id"] == "aws-classic" and c["recommended"] for c in cat["combos"]), cat["combos"][:3])
+    lows = [infra._cost_low(c["cost"]) for c in cat["combos"]]
+    check("infra: 규모별 후보 4~5개 — 싼 순 · 나머지는 others", 4 <= len(cat["combos"]) <= 5 and lows == sorted(lows)
+          and isinstance(cat["combos"][0]["cost"], str) and all(c["recommended"] for c in cat["combos"])
+          and any(c["id"] == "aws-classic" for c in cat["combos"])
+          and {o["id"] for o in cat["others"]} | {c["id"] for c in cat["combos"]} == set(ids)
+          and set(cat["services"]) == {n for c in cat["combos"] for n in c["services"]} and len(cat["services"]) < len(infra.SERVICES),
+          cat["combos"][:3])
+    check("infra: 소규모 후보는 다르다", [c["id"] for c in infra.catalog("small")["combos"]] != [c["id"] for c in cat["combos"]]
+          and all(c["id"] in infra.SHORTLIST["small"] for c in infra.catalog("small")["combos"]))
     root = make_repo()
     tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
     s = tools.status(root)
-    check("infra: status 에 카탈로그", s["infra_options"] and s["infra_options"]["scale"] is None and len(s["infra_options"]["combos"]) >= 10)
+    check("infra: status — 규모 전엔 후보 없이 규모부터 경고", s["infra_options"] and s["infra_options"]["scale"] is None
+          and s["infra_options"]["combos"] == [] and any("규모부터" in w for w in s["warnings"]) and not any("요금이 아직" in w for w in s["warnings"]), s["warnings"])
     r = tools.spec_save(root, {"platforms": ["ios"], "stack": {"backend": "fastapi"}, "infra": {"mau": 50000, "dau": 4000}})
     check("infra: mau/dau → scale", r["draft"] and r["draft_spec"]["infra"]["scale"] == "medium_plus"
           and not any("infra.scale" in p for p in r["remaining"]) and r["infra_options"]["scale"] == "medium_plus", r)
     s = tools.status(root)
-    check("infra: status 카탈로그가 규모를 따른다", s["infra_options"]["scale"] == "medium_plus" and s["infra_options"]["combos"][0]["recommended"])
+    check("infra: status 카탈로그가 규모를 따른다", s["infra_options"]["scale"] == "medium_plus" and s["infra_options"]["combos"][0]["recommended"]
+          and 4 <= len(s["infra_options"]["combos"]) <= 5 and any("요금이 아직" in w and "개만" in w for w in s["warnings"]), s["warnings"])
     r = tools.spec_save(root, {"infra": {"combo": "nope"}})
     check("infra: 없는 combo 거부", r["draft"] and any("infra.combo" in p for p in r["remaining"]) and r["draft_spec"]["infra"]["mau"] == 50000, r)
     r = tools.spec_save(root, {"infra": {"combo": "supabase-fly", "db": "PostgreSQL (Neon)"}})
@@ -490,9 +499,11 @@ def test_infra():
     # 요금은 매번 새로 — pricing 저장 전엔 경고 + 폴백, 저장 후엔 확인일·출처
     root = make_repo()
     tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
+    tools.spec_save(root, {"infra": {"mau": 200, "dau": 20}})   # 규모 먼저
     s = tools.status(root)
     check("pricing: 조회 전 경고", any("요금" in w for w in s["warnings"]) and s["infra_options"]["fresh"] == 0
-          and s["infra_options"]["stale"] == len(infra.COMBOS) and s["infra_options"]["services"]["supabase"].startswith("https://")
+          and s["infra_options"]["stale"] == len(s["infra_options"]["combos"]) == len(infra.SHORTLIST["small"])
+          and s["infra_options"]["services"]["supabase"].startswith("https://")
           and all(r.get("cost_basis") == infra.COST_BASIS and r["sources"] for r in s["infra_options"]["combos"]), s["warnings"])
     bad = tools.spec_save(root, {"platforms": ["ios"], "infra": {"pricing": {"checked": "어제", "combos": {"nope": {"small": "$1"}}}}})
     check("pricing: 모양 검사", bad["draft"] and sum("infra.pricing" in p for p in bad["remaining"]) == 2, bad["remaining"])

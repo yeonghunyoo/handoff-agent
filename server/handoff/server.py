@@ -71,8 +71,10 @@ def import_design(path: str = "", screens: list | None = None, components: list 
 @mcp.tool()
 def spec_save(spec: dict) -> dict:
     """② 스펙 저장. 필수: platforms[ios|android], stack.backend, infra.scale(small|medium_plus — infra.mau/dau 숫자를 주면
-    서버가 정한다), infra.db/auth/hosting (결정만 기록 — status.infra_options 의 조합 id 를 infra.combo 로 주면 db/auth/hosting/cost 가 채워진다).
-    infra.pricing {checked: YYYY-MM-DD, combos: {id: {small, medium_plus, sources[]}}} 는 그날 요금 페이지에서 읽은 값 — 표를 보이기 전에 저장한다.
+    서버가 정한다. **규모가 먼저다** — 규모가 저장돼야 infra_options 에 그 규모의 조합 4~5개가 실린다),
+    infra.db/auth/hosting (결정만 기록 — infra_options 의 조합 id 를 infra.combo 로 주면 db/auth/hosting/cost 가 채워진다).
+    infra.pricing {checked: YYYY-MM-DD, combos: {id: {small, medium_plus, sources[]}}} 는 그날 infra_options.services 의 요금 페이지(후보 것만)에서
+    읽은 값 — 표를 보이기 전에 저장한다.
     선택: stack.ios_project, stack.android_project, infra.mau, infra.dau, infra.combo, infra.cost, infra.env_vars[], infra.notes,
     divergences[] (승인된 플랫폼 차이 주제). 필수가 다 차기 전까지 부분 저장으로 누적된다 — 답을 받을 때마다 그 항목만 넘겨도 된다."""
     return tools.spec_save(ROOT, spec)

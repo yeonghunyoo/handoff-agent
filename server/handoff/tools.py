@@ -83,9 +83,13 @@ def status(root):
             st["hints"] = hints
         d_infra = ((draft or {}).get("infra") or {}) if isinstance(draft, dict) else {}
         st["infra_options"] = infra.catalog(d_infra.get("scale"), d_infra.get("pricing"))
-        if not st["infra_options"]["fresh"]:
+        if not st["infra_options"]["scale"]:
+            st["warnings"].append("인프라는 규모부터 — 예상 MAU·DAU 를 먼저 묻는다 (infra.mau/dau). 규모가 정해져야 "
+                                  "infra_options 에 그 규모의 조합 4~5개와 읽을 요금 페이지가 실린다. 그 전에는 요금을 조회하지 않는다")
+        elif not st["infra_options"]["fresh"]:
+            n = len(st["infra_options"]["services"])
             st["warnings"].append(f"인프라 요금이 아직 조회되지 않았다 (내장 폴백 {infra.COST_BASIS} 기준) — "
-                                  "infra_options.services 의 요금 페이지를 읽어 infra.pricing 으로 저장한 뒤 표를 보인다")
+                                  f"infra_options.services 의 요금 페이지 {n}개만 읽어 infra.pricing 으로 저장한 뒤 표를 보인다")
     out = {"ok": True, "wired": True, "phase": st["phase"], "label": st["label"], "version": st["version"],
            "cycle": st["cycle"], "human": st["human"], "next": st["next"], "warnings": st["warnings"],
            "fingerprint": st["fingerprint"], "roles": st.get("roles"), "reports": st.get("reports"),
@@ -223,7 +227,7 @@ def spec_save(root, spec):
         return {"ok": True, "draft": True, "remaining": problems, "draft_spec": merged,
                 "infra_options": infra.catalog(d_infra.get("scale"), d_infra.get("pricing")) if any(p.startswith("infra.") for p in problems) else None,
                 "message": "임시 저장 — 남은 항목만 이어서 묻는다:\n" + "\n".join(f"  · {p}" for p in problems)
-                + (f"\n규모 {d_infra['scale']} 기준 인프라 조합을 infra_options 에 실었다 — 비용 구간과 함께 표로 보이고 고르게 한다." if d_infra.get("scale") and any(p.startswith("infra.") for p in problems) else "")}
+                + (f"\n규모 {d_infra['scale']} 후보 {len(infra.SHORTLIST[d_infra['scale']])}개를 infra_options 에 실었다 — 요금을 읽어 저장한 뒤 비용 구간과 함께 표로 보이고 고르게 한다." if d_infra.get("scale") and any(p.startswith("infra.") for p in problems) else "")}
     merged = leaks.mask_deep(merged)
     merged["platforms"] = [p for p in util.APPS if p in [str(x).lower() for x in merged["platforms"]]]
     util.write_json(util.ho(root, util.SPEC), merged)

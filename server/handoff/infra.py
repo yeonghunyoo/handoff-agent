@@ -3,14 +3,16 @@
   SCALES              규모 구간 — 예상 MAU·DAU 로 정한다 (small | medium_plus)
   COMBOS              db · auth · hosting 조합 + 규모별 월 비용 구간 + 장단점 + 종속성
   scale_of(mau, dau)  숫자 → 규모 id (둘 다 없으면 None)
-  catalog(scale)      규모에 맞는 조합 목록 — 추천(그 규모에 맞는 것) 먼저, 그 안에서 싼 순
+  SHORTLIST           규모별 후보 4~5개 (id, 추천 순). 표에 보이는 것은 이것뿐이고 나머지는 others 로 id 만 든다
+  catalog(scale)      규모가 없으면 조합을 내지 않는다 (규모부터 묻는다). 있으면 SHORTLIST 만 — 싼 순
   expand(infra)       spec.infra 를 채운다: mau/dau → scale, combo → db/auth/hosting/cost (비어 있는 칸만)
 
   SERVICES            서비스 → 공식 요금 페이지. 인터뷰 때마다 여기서 새로 읽는다
   pricing_problems(p) infra.pricing 모양 검사
 
-요금은 **매번 새로 가져온다**. 서버는 네트워크를 쓰지 않으므로 스킬(세션의 WebFetch/WebSearch)이 SERVICES 의
-요금 페이지를 읽어 규모별 월 구간을 다시 잡고 `spec_save({"infra": {"pricing": {...}}})` 로 저장한다. 그 뒤로
+순서는 **규모 → 후보 → 요금**이다. 규모가 정해지기 전에는 조합도 요금 페이지 목록도 내지 않는다.
+요금은 **매번 새로 가져온다**. 서버는 네트워크를 쓰지 않으므로 스킬(세션의 WebFetch/WebSearch)이 catalog(scale).services
+(그 규모 후보가 쓰는 서비스만, 10개 안팎) 의 요금 페이지를 읽어 규모별 월 구간을 다시 잡고 `spec_save({"infra": {"pricing": {...}}})` 로 저장한다. 그 뒤로
 catalog · expand · 착수 프롬프트 · 대시보드는 저장된 값(확인일 · 출처 포함)을 쓴다. COMBOS 의 cost 는 조회가
 안 될 때만 쓰는 폴백이고 COST_BASIS 가 그 기준 시점이다 — 폴백으로 고른 것은 그렇게 표시된다.
 사람이 읽는 칸(label · fit · note)은 한국어, 에이전트가 읽는 칸(en · build)은 영어 명령문이다.
@@ -131,8 +133,15 @@ COMBOS = [
      "fit": "서비스가 여럿이고 팀에 운영 경험이 있을 때. 클러스터 자체 비용이 있어 소규모엔 과하다"},
 ]
 
+# 규모별 후보 — 표에 보이는 것은 이 4~5개뿐이다 (추천 순). 나머지 조합은 others 로 id·이름만 들고, 사람이 id 로 부르면 그대로 쓴다.
+SHORTLIST = {
+    "small": ["supabase-fly", "railway", "vps-docker", "firebase", "aws-serverless"],
+    "medium_plus": ["supabase-fly", "gcp-cloudrun", "aws-classic", "aws-serverless", "vps-docker"],
+}
+
 _ID = {s["id"]: s for s in SCALES}
 _COMBO = {c["id"]: c for c in COMBOS}
+assert all(sid in _ID and 4 <= len(ids) <= 5 and all(sid in _COMBO[i]["scales"] for i in ids) for sid, ids in SHORTLIST.items())
 
 
 def scale(sid):
@@ -180,39 +189,45 @@ def _fresh(pricing, cid):
 
 
 def catalog(sid=None, pricing=None):
-    """스킬이 표로 보이는 목록. sid 가 있으면 그 규모의 cost 한 칸 + recommended 순, 없으면 두 규모 cost 를 다 든다.
+    """스킬이 표로 보이는 목록. 규모(sid)가 없으면 combos 는 비어 있다 — 규모부터 묻는다.
+    있으면 SHORTLIST[sid] 의 4~5개만 (싼 순) + others (나머지 id·이름). services 는 그 후보가 쓰는 요금 페이지만.
     pricing(infra.pricing) 이 있으면 그 값을 쓰고 확인일·출처를 단다. 없는 조합은 폴백 + cost_basis 로 표시한다."""
     s = scale(sid)
     checked = pricing.get("checked") if isinstance(pricing, dict) else None
+    base = {"scale": s["id"] if s else None, "scales": SCALES, "cost_unit": COST_UNIT, "cost_basis": COST_BASIS,
+            "cost_checked": checked}
+    if not s:
+        return {**base, "combos": [], "others": [], "services": {}, "fresh": 0, "stale": 0,
+                "note": "규모가 아직 없다 — 예상 MAU·DAU 를 먼저 묻는다 (infra.mau/dau 또는 infra.scale). "
+                        "규모가 정해지면 그 규모에 맞는 조합 4~5개와 그 조합이 쓰는 요금 페이지만 여기 실린다. "
+                        "규모 전에는 요금 페이지를 읽지 않는다"}
     rows, fresh_n = [], 0
-    for c in COMBOS:
+    for cid in SHORTLIST[s["id"]]:
+        c = _COMBO[cid]
         row = {k: c[k] for k in ("id", "label", "db", "auth", "hosting", "lockin", "fit", "scales", "services")}
         row["sources"] = [SERVICES[n] for n in c["services"]]
-        f = _fresh(pricing, c["id"])
-        cost = {"small": f["small"], "medium_plus": f["medium_plus"]} if f else dict(c["cost"])
+        f = _fresh(pricing, cid)
         if f:
             fresh_n += 1
+            row["cost"] = f[s["id"]]
             row["cost_checked"] = checked
             if f.get("sources"):
                 row["sources"] = list(f["sources"])
             if f.get("note"):
                 row["cost_note"] = f["note"]
         else:
+            row["cost"] = c["cost"][s["id"]]
             row["cost_basis"] = COST_BASIS   # 폴백 — 조회가 안 된 것
-        if s:
-            row["cost"] = cost[s["id"]]
-            row["recommended"] = s["id"] in c["scales"]
-        else:
-            row["cost"] = cost
+        row["recommended"] = True
         rows.append(row)
-    if s:
-        rows.sort(key=lambda r: (not r["recommended"], _cost_low(r["cost"])))
-    return {"scale": s["id"] if s else None, "scales": SCALES, "cost_unit": COST_UNIT, "combos": rows,
-            "services": dict(SERVICES), "cost_checked": checked, "fresh": fresh_n, "stale": len(rows) - fresh_n,
-            "cost_basis": COST_BASIS,
-            "note": ("요금은 매번 새로 읽는다 — services 의 요금 페이지를 조회해 규모별 월 구간을 다시 잡고 "
-                     "spec_save({infra: {pricing: {checked, combos: {id: {small, medium_plus, sources[], note?}}}}}) 로 저장한 뒤 표를 보인다. "
-                     "cost_basis 가 달린 행은 아직 폴백이다. 그래도 비교용 대략치다 — 확정 전에 사람이 요금표를 본다. "
+    rows.sort(key=lambda r: _cost_low(r["cost"]))
+    services = {n: SERVICES[n] for c in rows for n in c["services"]}
+    others = [{"id": c["id"], "label": c["label"]} for c in COMBOS if c["id"] not in SHORTLIST[s["id"]]]
+    return {**base, "combos": rows, "others": others, "services": services, "fresh": fresh_n, "stale": len(rows) - fresh_n,
+            "note": (f"{s['label']} 후보 {len(rows)}개다. 요금은 매번 새로 읽는다 — services 의 요금 페이지({len(services)}개)만 조회해 "
+                     "규모별 월 구간을 다시 잡고 spec_save({infra: {pricing: {checked, combos: {id: {small, medium_plus, sources[], note?}}}}}) "
+                     "로 저장한 뒤 표를 보인다. cost_basis 가 달린 행은 아직 폴백이다. 그래도 비교용 대략치다 — 확정 전에 사람이 요금표를 본다. "
+                     "others 는 표에 없는 나머지 조합이다 — 사람이 그 id 를 부르면 그대로 쓴다 (요금은 폴백). "
                      "id 로 고르면 infra.combo, 직접 조합하면 infra.db/auth/hosting (섞어도 된다)")}
 
 
