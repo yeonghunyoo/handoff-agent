@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 무엇인가
 
 Claude Code 플러그인. Claude Design 핸드오프 패키지를 프론트 계약으로, `api/openapi.yaml` 을 백엔드 계약으로 받아
-iOS · Android · backend 를 git 워크트리에서 병렬 구현하고, 서버가 실측한 것만 사람 승인 뒤 머지한다.
+iOS · Android · backend 를 역할별 git 워크트리에서 구현하고(기본 직렬 — config 의 dispatch.mode 로 병렬 전환),
+서버가 실측한 것만 사람 승인 뒤 머지한다.
 설계 원칙과 금지 사항은 `AGENT.md` 가 정본이다 — 코드를 고치기 전에 먼저 읽는다. 이 파일은 그것을 반복하지 않는다.
 
 이 리포는 플러그인 **자체**다. `design/` `api/` `.handoff/` 는 여기가 아니라 플러그인을 쓰는 대상 레포에 생긴다.

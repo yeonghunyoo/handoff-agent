@@ -1,6 +1,6 @@
 # 원칙 — 이 리포가 지키는 것
 
-Claude Design 핸드오프 패키지를 계약으로 받아 iOS · Android · backend 를 병렬로 만들고, 서버가 실측한 것만
+Claude Design 핸드오프 패키지를 계약으로 받아 iOS · Android · backend 를 역할별 워크트리에서 만들고(기본 직렬), 서버가 실측한 것만
 사람 승인 뒤 본선에 올린다. 진입은 `/handoff` 하나, 단계는 MCP 서버가 강제한다.
 
 ```

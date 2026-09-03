@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "handoff",
-      "description": "핸드오프 패키지(프론트 계약) + openapi(백엔드 계약) → 워크트리 병렬 구현 → 서버 실측 검사 → 사람 승인 → 머지.",
+      "description": "핸드오프 패키지(프론트 계약) + openapi(백엔드 계약) → 역할별 워크트리 구현(기본 직렬) → 서버 실측 검사 → 사람 승인 → 머지.",
       "author": {"name": "yeonghunyoo"},
       "category": "development",
       "source": "./"

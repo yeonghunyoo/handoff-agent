@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Claude Design 핸드오프 패키지(zip/폴더) 하나로 iOS · Android · backend 를 한 번에 만드는 워크플로의 유일한 진입점. 패키지 등록 → 스펙·인프라 결정 → openapi → 계약 확정(사람) → 워크트리 병렬 구현 → 서버 검사 → 완료 승인(사람) → 머지. 새로 시작하든 이어하든 여기서 시작한다.
+description: Claude Design 핸드오프 패키지(zip/폴더) 하나로 iOS · Android · backend 를 한 번에 만드는 워크플로의 유일한 진입점. 패키지 등록 → 스펙·인프라 결정 → openapi → 계약 확정(사람) → 워크트리 구현(기본 직렬) → 서버 검사 → 완료 승인(사람) → 머지. 새로 시작하든 이어하든 여기서 시작한다.
 ---
 
 # handoff — 진입점
