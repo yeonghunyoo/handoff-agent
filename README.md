@@ -147,6 +147,19 @@ Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이�
 
 승인 채널은 elicitation 과 터미널(`run.py review|ship --root .`) 둘뿐이다 — 에이전트가 승인을 위조할 수 없다.
 
+## 보안 — 민감 파일 · 개인정보
+
+| 어디서 | 무엇을 |
+|---|---|
+| 훅 (`hooks/guard.py`) | `.env` · 키 · 인증서 · credentials · `.ssh/` `.aws/` 등 민감 파일의 Read·Grep·Glob·Edit·Write·Bash 를 막는다 (홈 디렉터리 경로 포함). `env`·`printenv` 전체 덤프도 막는다. `.example` 은 자유 |
+| 패키지 등록 (`import_design`) | 민감 파일은 `design/` 에서 뺀다. 텍스트의 시크릿, `chats/`·README 의 개인정보(이메일·휴대전화·주민번호·카드번호)는 마스킹한다. 원본 zip 은 그대로. 결과는 응답 `security` 에 |
+| 서버 응답 · 상태 · 문서 | MCP 응답·CLI 출력·`.handoff/` 이력·리포트·`docs/` 전부 시크릿 + 개인정보 마스킹(`•••`) |
+| 대상 레포 `.gitignore` | `setup` 이 민감 파일 목록(`leaks.SENSITIVE_GLOBS`)을 그대로 넣는다 |
+| 검사 (`verify`) | 워크트리 코드·커밋 이력의 시크릿 값은 [S1] 블로커 |
+| 플러그인 자체 | 테스트가 리포 전체를 훑어 개인 절대 경로·개인정보·시크릿·민감 파일이 없는지 확인한다 (`bash tests/run.sh security`) |
+
+패턴은 경보다 — 블랙리스트는 진다. 그래도 없는 것보다 낫다.
+
 ## 레포에 깔리는 것
 
 `.handoff/`(상태·리포트·워크트리 — 커밋 안 됨) · `design/`(패키지) · `api/openapi.yaml` · `shared/generated/`(워크트리에만) ·

@@ -63,7 +63,8 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 
 - **검사 항목 추가/변경** (`checks.py`): 착수 프롬프트 체크리스트 · `precheck` · `verify` 가 전부 `checks.items` + `score.evaluate_role` 을 공유한다. 규칙 문장은 `reports.RULES` 한 곳에만 두고 ID(`W1` `C2` `S1`…)로 인용한다. 서버 거부 메시지도 같은 ID 를 앞에 단다.
 - **생성 상수 추가** (`gen.py`): `ApiRoutes` `Screens` `DesignTokens` `Strings` `Icons` 는 "앱이 부르는 이름 = 검사가 세는 이름"이다. 새 상수를 만들면 `checks.targets/items` 에 소비 항목(`API-xx` `SCR-xx` `ICN-xx`…)을 같이 넣어야 검사가 센다. 같은 입력이면 같은 바이트여야 한다 (`gen.drift` 가 바이트 대조).
-- **보호 구역·민감 파일 패턴**: `hooks/guard.py` 와 `server/handoff/leaks.py` 가 각각 따로 든다 (훅은 서버를 import 하지 못하므로 의도된 중복). 한쪽을 고치면 다른 쪽도 맞춘다.
+- **보호 구역·민감 파일 패턴**: `hooks/guard.py` 와 `server/handoff/leaks.py` 가 각각 따로 든다 (훅은 서버를 import 하지 못하므로 의도된 중복). 한쪽을 고치면 다른 쪽도 맞춘다. 대상 레포의 `.gitignore` 블록은 `leaks.SENSITIVE_GLOBS` 에서 생성된다.
+- **마스킹은 한 곳**: 채팅으로 나가는 것(MCP 응답은 `server._out`, CLI 는 `run.py`, 이력은 `util.record`, 리포트·스펙·`docs/`)은 전부 `leaks.mask_all(_deep)` (시크릿 + 개인정보)를 거친다. 새 출력 경로를 만들면 같은 함수를 건다. 패키지 등록은 `leaks.sanitize_tree` 가 `design/` 을 정리한다 — 개인정보 마스킹은 `chats/`·README 에만 (화면 HTML 의 예시 데이터는 보존).
 - **설정 기본값** 은 `util.DEFAULTS` (역할 경로 `roles` · 점수 가중치·임계치 · `verify.commands` · `test_globs`). 대상 레포의 `.handoff/config.json` 이 덮어쓴다.
 
 ### 언어 규칙

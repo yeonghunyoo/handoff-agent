@@ -1,9 +1,9 @@
 {
-  "description": "handoff 경보 훅 — 보호 구역 쓰기 · 민감 파일 · 승인 명령 자동 실행을 끊는다. 보장이 아니라 경보라 실패는 통과다.",
+  "description": "handoff 경보 훅 — 보호 구역 쓰기 · 민감 파일 읽기/쓰기/검색 · 환경 변수 덤프 · 승인 명령 자동 실행을 끊는다. 보장이 아니라 경보라 실패는 통과다.",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash",
         "hooks": [
           {
             "type": "command",

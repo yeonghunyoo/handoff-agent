@@ -108,6 +108,8 @@ def main():
         out = tools.review(root, approver=tty_approver)
     else:
         out = tools.ship(root, approver=tty_approver)
+    from handoff import leaks
+    out = leaks.mask_all_deep(out)
     print(out.get("message") or json.dumps(out, ensure_ascii=False, indent=2))
     return 0 if out.get("ok") else 1
 

@@ -35,7 +35,7 @@ def _components_of(root, m):
 
 def _write(root, name, text):
     p = os.path.join(root, util.DOCS_DIR, name)
-    util.write_text(p, leaks.mask(text))
+    util.write_text(p, leaks.mask_all(text))
     return os.path.join(util.DOCS_DIR, name)
 
 

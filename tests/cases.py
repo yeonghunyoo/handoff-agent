@@ -6,6 +6,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -812,6 +813,17 @@ def test_hooks():
         ("Bash", {"command": "cat .env"}, "deny"),
         ("Bash", {"command": "python3 server/run.py ship --root ."}, "deny"),
         ("Bash", {"command": "ls apps/ios"}, "allow"),
+        # 민감 파일 — 검색 · 홈 디렉터리 · 환경 변수 덤프
+        ("Grep", {"pattern": "KEY", "path": os.path.join(root, "backend/.env")}, "deny"),
+        ("Glob", {"pattern": "*.swift", "path": os.path.join(root, "apps")}, "allow"),
+        ("Read", {"file_path": os.path.expanduser("~/.ssh/id_rsa")}, "deny"),
+        ("Read", {"file_path": os.path.join(root, "ops/.netrc")}, "deny"),
+        ("Bash", {"command": "cat $HOME/.aws/credentials"}, "deny"),
+        ("Bash", {"command": "cat ~/.netrc"}, "deny"),
+        ("Bash", {"command": "env"}, "deny"),
+        ("Bash", {"command": "printenv | grep KEY"}, "deny"),
+        ("Bash", {"command": "printenv HOME"}, "allow"),
+        ("Bash", {"command": "cat backend/.env.example"}, "allow"),
     ]
     for tool, inp, want in cases:
         got = run(tool, inp)
@@ -822,9 +834,70 @@ def test_hooks():
     check("hook: 미배선 레포는 통과", r.stdout.strip() == "")
 
 
+def test_security():
+    # 개인정보 패턴 — 예시 값은 남긴다
+    hits = dict(leaks.find_pii("a yh.kim@gmail.com b user@example.com c 010-3456-7890 d 010-1234-5678 e 900101-1234567 f 5312-9876-4321-0001 g 4111 1111 1111 1111 h 2026-09-03"))
+    check("pii: 찾기 — 실값만", set(hits) == {"email", "kr-mobile", "kr-rrn", "card"} and hits["email"] == "yh.kim@gmail.com" and hits["kr-mobile"] == "010-3456-7890", hits)
+    m = leaks.mask_all("key AKIAABCDEFGHIJKLMNOP mail yh.kim@gmail.com tel 010-3456-7890 ok user@example.com support@acme.io")
+    check("pii: 마스킹 — 시크릿 + 개인정보, 예시·역할 주소는 남긴다", "AKIA" not in m and "gmail" not in m and "3456" not in m
+          and "user@example.com" in m and "support@acme.io" in m, m)
+    check("pii: deep", leaks.mask_all_deep({"a": ["x 900101-1234567"], "b": 3})["a"][0] == "x •••")
+    # 패키지 import — 민감 파일은 빠지고, chats/README 의 개인정보와 어디서든 시크릿은 마스킹된다
+    root = make_repo()
+    pkg = make_package(os.path.join(os.path.dirname(root), "pkg"))
+    w(os.path.join(pkg, ".env"), "DATABASE_URL=postgres://u:p@h/db\n")
+    os.makedirs(os.path.join(pkg, "secrets"), exist_ok=True)
+    w(os.path.join(pkg, "secrets", "service-account.json"), "{}")
+    os.makedirs(os.path.join(pkg, "chats"), exist_ok=True)
+    w(os.path.join(pkg, "chats", "1.json"), '[{"content":"내 메일 yh.kim@gmail.com 로 보내줘, 전화 010-3456-7890","role":"user"},{"content":"ok","role":"assistant"}]')
+    w(os.path.join(pkg, "README.md"), "# Handoff\n\nTarget stack: SwiftUI, backend FastAPI.\n\nContact yh.kim@gmail.com. api_key = \"sk_live_ABCDEFGHIJKLMNOPQRSTUV\"\n")
+    w(os.path.join(pkg, "order-list.html"), '<html><body>demo@example.com 010-1234-5678 token="ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ab"</body></html>')
+    r = tools.import_design(root, pkg)
+    d = os.path.join(root, "design")
+    check("import: 민감 파일은 design/ 에 없다", r["ok"] and not os.path.exists(os.path.join(d, ".env")) and not os.path.exists(os.path.join(d, "secrets", "service-account.json"))
+          and set(r["security"]["dropped"]) == {".env", "secrets/service-account.json"}, r.get("security"))
+    chat = open(os.path.join(d, "chats", "1.json"), encoding="utf-8").read()
+    readme = open(os.path.join(d, "README.md"), encoding="utf-8").read()
+    html = open(os.path.join(d, "order-list.html"), encoding="utf-8").read()
+    check("import: chats·README 개인정보 마스킹, 시크릿은 어디서든", "gmail" not in chat and "3456" not in chat and "gmail" not in readme
+          and "sk_live_ABCDEFGHIJKLMNOPQRSTUV" not in readme and "ghp_" not in html and "demo@example.com" in html and "010-1234-5678" in html,
+          (chat, readme, html))
+    check("import: 원본 패키지는 그대로", os.path.isfile(os.path.join(pkg, ".env")) and "gmail" in open(os.path.join(pkg, "chats", "1.json"), encoding="utf-8").read())
+    blob = json.dumps(r, ensure_ascii=False)
+    check("import: 응답·경고에 값이 없다", "gmail" not in blob and "sk_live_" not in blob and "보안 정리" in r["message"] and "민감 파일 2개" in r["message"], r["message"][-400:])
+    intent = open(os.path.join(d, "derived", "intent.md"), encoding="utf-8").read()
+    check("import: 파생 의도에도 개인정보 없음", "gmail" not in intent and "•••" in intent, intent)
+    check("import: 민감 경로 자체는 거부", not tools.import_design(root, "~/.ssh")["ok"] and "[S2]" in tools.import_design(root, "~/.ssh")["message"])
+    # 스펙·이력·문서 마스킹
+    r = tools.spec_save(root, {**SPEC, "infra": {**SPEC["infra"], "notes": "담당 yh.kim@gmail.com / db pw: password = \"Sup3rSecretValue!\""}})
+    st = util.read_state(root)
+    check("spec: 개인정보·시크릿 마스킹", "gmail" not in json.dumps(r, ensure_ascii=False) and "Sup3rSecret" not in json.dumps(r) and "gmail" not in json.dumps(st), r["spec"]["infra"]["notes"])
+    ig = open(os.path.join(root, ".gitignore"), encoding="utf-8").read()
+    check("setup: .gitignore 가 leaks 목록을 그대로 쓴다", ".netrc" in ig and "*.mobileprovision" in ig and "!*.example" in ig and ".handoff/" in ig, ig)
+    # 플러그인 자체 패키징 — 개인 경로·개인정보·시크릿이 리포에 없다
+    repo = os.path.abspath(os.path.join(HERE, ".."))
+    files = subprocess.run(["git", "ls-files"], cwd=repo, capture_output=True, text=True).stdout.split()
+    bad = []
+    for f in files:
+        fp = os.path.join(repo, f)
+        if leaks.is_sensitive_file(f):
+            bad.append(f"{f}: 민감 파일")
+        try:
+            text = open(fp, encoding="utf-8").read()
+        except (UnicodeDecodeError, OSError):
+            continue
+        if re.search("(/" + "Users/|/home/[a-z]|C:\\\\" + "Users)", text):   # 리터럴을 쪼개 이 파일 자신이 걸리지 않게
+            bad.append(f"{f}: 개인 절대 경로")
+        if f != "tests/cases.py" and leaks.find(text):
+            bad.append(f"{f}: 시크릿 {leaks.find(text)[:2]}")
+        if f != "tests/cases.py" and leaks.find_pii(text):
+            bad.append(f"{f}: 개인정보 {leaks.find_pii(text)[:2]}")
+    check("packaging: 리포에 개인 경로·개인정보·시크릿·민감 파일 없음", not bad, bad)
+
+
 TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
-         test_screens_page, test_hooks]
+         test_screens_page, test_hooks, test_security]
 
 
 def main():

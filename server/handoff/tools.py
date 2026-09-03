@@ -142,8 +142,7 @@ def setup(root):
     ig = os.path.join(root, ".gitignore")
     cur = util.read_text(ig)
     block = ("\n# handoff (도구 상태 · 민감 파일은 커밋하지 않는다 — 예시는 .example 로)\n"
-             ".handoff/\ndocs/handoff-screens/\n.env\n.env.*\n!.env.example\n*.pem\n*.p8\n*.p12\n*.keystore\n*.jks\n"
-             "*.tfstate\n*.tfvars\n*credentials*.json\n*service-account*.json\n")
+             ".handoff/\ndocs/handoff-screens/\n" + "\n".join(leaks.SENSITIVE_GLOBS) + "\n!*.example\n")
     if "# handoff (" not in cur:
         util.write_text(ig, cur.rstrip("\n") + block)
     md = os.path.join(root, "CLAUDE.md")
@@ -179,7 +178,11 @@ def import_design(root, path=None, screens=None, components=None, url=None):
     if flow.idx(st["phase"]) > flow.idx("review") and st["phase"] != "done":
         return _refuse(flow.require(st, "import", "spec", "api", "review", "done"))
     try:
+        if path and (leaks.is_sensitive_file(os.path.abspath(os.path.expanduser(path)).replace(os.sep, "/"))
+                     or leaks.SENSITIVE_DIR_RE.search(os.path.abspath(os.path.expanduser(path)).replace(os.sep, "/"))):
+            return _refuse("[S2] 민감 파일·디렉터리 경로다 — 디자인 패키지가 아니다. 가져오지 않았다.")
         src = design.import_package(root, path) if path else os.path.basename(util.design_dir(root))
+        sec = leaks.sanitize_tree(util.design_dir(root)) if path else {"dropped": [], "masked": {}, "secrets": 0, "pii": 0}
         if screens or components:
             design.confirm_screens(root, screens, components)
         m = design.scan(root)
@@ -205,6 +208,10 @@ def import_design(root, path=None, screens=None, components=None, url=None):
           screens=[s["id"] for s in m["screens"]], tokens=len(m["tokens"]))
     cfg, st = _st(root)
     warn = "" if m["tokens"] else "\n! 토큰이 없다 — 색·치수 하드코딩 검출이 비활성이다 (패키지에 tokens.json 이나 css 변수가 있으면 잡힌다)."
+    if sec["dropped"] or sec["masked"]:
+        warn += ("\n! 보안 정리: " + (f"민감 파일 {len(sec['dropped'])}개를 뺐다 ({', '.join(sec['dropped'][:8])}) " if sec["dropped"] else "")
+                 + (f"시크릿 {sec['secrets']}건 · 개인정보 {sec['pii']}건을 마스킹했다 ({', '.join(list(sec['masked'])[:8])})" if sec["masked"] else "")
+                 + " — 원본 패키지는 그대로다. 사용자에게 알린다.")
     if m.get("boards"):
         warn += "\n탐색 보드(여러 안 비교 — 화면 아님, 참고 자료): " + ", ".join(m["boards"])
     if any(s.get("state") for s in m["screens"]) and not m.get("confirmed"):
@@ -222,7 +229,7 @@ def import_design(root, path=None, screens=None, components=None, url=None):
                            for c in comps],
             "navigation": {k: v for k, v in (detail.get("navigation") or {}).items() if k != "transitions"},
             "boards": m.get("boards", []), "tokens": len(m["tokens"]), "docs": m["docs"], "chats": m.get("chats", []),
-            "assets": len(m["assets"]), "hints": hints,
+            "assets": len(m["assets"]), "hints": hints, "security": sec,
             "plan": _docs(root, cfg, st),
             "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 컴포넌트 {len(comps)}개 ({ctypes}) · 토큰 {len(m['tokens'])}개 · "
                         f"문서 {len(m['docs'])}개 · 파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · "
@@ -255,7 +262,7 @@ def spec_save(root, spec):
                 "infra_options": infra.catalog(d_infra.get("scale"), d_infra.get("pricing")) if any(p.startswith("infra.") for p in problems) else None,
                 "message": "임시 저장 — 남은 항목만 이어서 묻는다:\n" + "\n".join(f"  · {p}" for p in problems)
                 + (f"\n규모 {d_infra['scale']} 후보 {len(infra.SHORTLIST[d_infra['scale']])}개를 infra_options 에 실었다 — 요금을 읽어 저장한 뒤 비용 구간과 함께 표로 보이고 고르게 한다." if d_infra.get("scale") and any(p.startswith("infra.") for p in problems) else "")}
-    merged = leaks.mask_deep(merged)
+    merged = leaks.mask_all_deep(merged)
     merged["platforms"] = [p for p in util.APPS if p in [str(x).lower() for x in merged["platforms"]]]
     util.write_json(util.ho(root, util.SPEC), merged)
     try:
@@ -474,7 +481,7 @@ def report(root, role, rep):
         if e["blockers"]:
             return _refuse("REJECTED [R1]: open blockers. Not recorded. Fix and resubmit, or submit status=blocked "
                            "with tried + error [R2].\n" + "\n".join(f"  x {b}" for b in e["blockers"]))
-    rec = leaks.mask_deep({**rep, "_role": role, "_version": st["version"], "_at": util.now()})
+    rec = leaks.mask_all_deep({**rep, "_role": role, "_version": st["version"], "_at": util.now()})
     util.write_json(util.ho(root, util.REPORTS, f"{role}.json"), rec)
     if role not in st["reports"]:
         st["reports"].append(role)

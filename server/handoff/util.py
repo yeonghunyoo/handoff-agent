@@ -123,7 +123,7 @@ def write_state(root, st):
 def record(root, st, ev, **fields):
     """상태에 사건 한 줄을 남기고 저장한다. 자유 텍스트는 마스킹한다."""
     from . import leaks
-    st.setdefault("history", []).append({"t": now(), "ev": ev, **leaks.mask_deep(fields)})
+    st.setdefault("history", []).append({"t": now(), "ev": ev, **leaks.mask_all_deep(fields)})
     st["history"] = st["history"][-500:]
     write_state(root, st)
     return st

@@ -8,7 +8,12 @@ import os
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import BaseModel
 
-from . import tools
+from . import leaks, tools
+
+
+def _out(r):
+    """채팅으로 나가는 응답은 전부 시크릿·개인정보를 마스킹한다."""
+    return leaks.mask_all_deep(r)
 
 ROOT = os.path.abspath(os.environ.get("HANDOFF_ROOT") or os.getcwd())
 
@@ -38,23 +43,23 @@ async def _elicit(ctx, message):
 async def _approve_then(ctx, run):
     pre = run(None)
     if not pre.get("pending_human"):
-        return pre
+        return _out(pre)
     decision = await _elicit(ctx, pre["approval_prompt"])
     if decision is None:
-        return pre
-    return run(lambda m, i: decision)
+        return _out(pre)
+    return _out(run(lambda m, i: decision))
 
 
 @mcp.tool()
 def status() -> dict:
     """현재 단계 · 다음 행동 · 경고. 무엇을 할지 모르면 항상 이것부터."""
-    return tools.status(ROOT)
+    return _out(tools.status(ROOT))
 
 
 @mcp.tool()
 def setup() -> dict:
     """미배선 레포를 배선한다 (.handoff/config.json · .gitignore · CLAUDE.md 절). 멱등."""
-    return tools.setup(ROOT)
+    return _out(tools.setup(ROOT))
 
 
 @mcp.tool()
@@ -66,7 +71,7 @@ def import_design(path: str = "", screens: list | None = None, components: list 
     design/handoff.manifest.json 에 화면·컴포넌트·내비게이션·state·모델·문구·아이콘·토큰 상세가 실린다.
     url: claude.ai/design 프로젝트 링크 (링크로 받았을 때 — 요약 표에 프로젝트 id·url 로 보인다).
     done 상태에서 부르면 새 사이클을 연다."""
-    return tools.import_design(ROOT, path or None, screens, components, url or None)
+    return _out(tools.import_design(ROOT, path or None, screens, components, url or None))
 
 
 @mcp.tool()
@@ -78,13 +83,13 @@ def spec_save(spec: dict) -> dict:
     읽은 값 — 표를 보이기 전에 저장한다.
     선택: stack.ios_project, stack.android_project, infra.mau, infra.dau, infra.combo, infra.cost, infra.env_vars[], infra.notes,
     divergences[] (승인된 플랫폼 차이 주제). 필수가 다 차기 전까지 부분 저장으로 누적된다 — 답을 받을 때마다 그 항목만 넘겨도 된다."""
-    return tools.spec_save(ROOT, spec)
+    return _out(tools.spec_save(ROOT, spec))
 
 
 @mcp.tool()
 def api_submit(openapi: str) -> dict:
     """③ api/openapi.yaml 본문 제출. design/ 의 화면·문서에서 필요한 데이터를 읽어 초안한다. 검증 통과분만 쓴다."""
-    return tools.api_submit(ROOT, openapi)
+    return _out(tools.api_submit(ROOT, openapi))
 
 
 @mcp.tool()
@@ -96,32 +101,32 @@ async def review(ctx: Context) -> dict:
 @mcp.tool()
 def back(to: str, reason: str) -> dict:
     """이전 단계로 복귀. to: import | spec | api | build. 사유는 기록에 남는다."""
-    return tools.back(ROOT, to, reason)
+    return _out(tools.back(ROOT, to, reason))
 
 
 @mcp.tool()
 def build() -> dict:
     """⑤ 착수 — 역할별 워크트리 + 생성 상수 + 영어 착수 프롬프트. 이미 착수됐으면 이어가기 정보를 준다."""
-    return tools.build(ROOT)
+    return _out(tools.build(ROOT))
 
 
 @mcp.tool()
 def precheck(role: str) -> dict:
     """⑤ 중 자가 점검 — verify 와 같은 검사를 자기 워크트리에 돌린다. report 전 통과가 의무다."""
-    return tools.precheck(ROOT, role)
+    return _out(tools.precheck(ROOT, role))
 
 
 @mcp.tool()
 def report(role: str, report: dict) -> dict:
     """⑤ 말 리포트 접수. {status: done|partial|blocked, not_done[], blocked[{what,tried[],error}], divergences[{topic,reason}],
     proposals[], build{ok,seconds}, tests{passed,failed,seconds}, human_check[]}. 마지막 접수가 ⑥ verify 를 자동 실행한다."""
-    return tools.report(ROOT, role, report)
+    return _out(tools.report(ROOT, role, report))
 
 
 @mcp.tool()
 def verify() -> dict:
     """⑥ 검사 — 서버가 코드·diff 를 재검사해 점수와 loop/pass 를 판정한다. loop 면 인계가 만들어진다."""
-    return tools.verify(ROOT)
+    return _out(tools.verify(ROOT))
 
 
 @mcp.tool()
