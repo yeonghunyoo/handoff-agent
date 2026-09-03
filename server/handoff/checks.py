@@ -30,14 +30,7 @@ _DIM_RES = [
 ]
 _KO_LIT = re.compile(r"[\"'][^\"'\n]*[가-힣][^\"'\n]*[\"']")
 # 치수 토큰은 종류가 맞는 문맥에서만 잡는다 — radius 8 이 점 크기 8 로 쓰인 것은 하드코딩이 아니다
-def _dim_kind(key):
-    """토큰 키 → 문맥 종류. radius.* · corner.* → radius, space.* · spacing.* · gap.* → space, 그 외 None(어디서든 잡는다)."""
-    k = key.lower()
-    if "radius" in k or k.startswith("corner"):
-        return "radius"
-    if k.startswith(("space", "spacing", "gap", "inset")):
-        return "space"
-    return None
+_dim_kind = derive.dim_kind          # 토큰 키 → 문맥 종류 (derive 와 한 규칙)
 
 
 _DIM_CTX = {

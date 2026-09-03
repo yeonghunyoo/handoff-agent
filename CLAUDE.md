@@ -47,7 +47,7 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 
 | 단계 | 읽는 것 | 만드는 것 |
 |---|---|---|
-| import | zip/tar.gz/standalone HTML/폴더 | `design/` (정본, 읽기 전용) · `design/derived/*` (`derive.write_all` — 문구·아이콘·모델·전이·**컴포넌트(타입)**·**내비게이션**·의도·규칙) · 사람이 확정하면 `design/handoff.manifest.json` v2 (`design.confirm_screens` 가 화면·컴포넌트를 쓰고 `design.write_manifest` 가 상세를 채운다) |
+| import | zip/tar.gz/standalone HTML/폴더 | `design/` (정본, 읽기 전용) · `design/derived/*` (`derive.write_all` — 문구·아이콘·모델·전이·**컴포넌트(타입)**·**내비게이션**·의도·규칙·**레이아웃 트리** `layout/<screen>.json` — 무손실, 빌더는 HTML 대신 이것을 옮긴다) · 사람이 확정하면 `design/handoff.manifest.json` v2 (`design.confirm_screens` 가 화면·컴포넌트를 쓰고 `design.write_manifest` 가 상세를 채운다) |
 | spec | 사람 답 (부분 저장 누적: `.handoff/spec.draft.json`) | `.handoff/spec.json` |
 | api | `api_submit` 본문 | `api/openapi.yaml` (`api.validate` 통과분만) |
 | review ✋ | 위 셋 | `state.locked.hash` + 본선 커밋 |

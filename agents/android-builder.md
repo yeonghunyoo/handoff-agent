@@ -28,7 +28,8 @@ the human's compare page.
 1. Read design/derived/intent.md, rules.json, components.json, navigation.json, behavior.json, entities.json — in that order. They decide structure before any screen is written.
 2. Make the project build empty (see "Project rules"). Commit.
 3. Add the generated files (shared/generated/*.kt, package `shared.generated` unless config says otherwise) to the app's source set as-is. Commit.
-4. Build screens in navigation order: entry screen first, then tabs, then pushed screens, then overlays. One commit per screen or component.
+4. Build screens in navigation order: entry screen first, then tabs, then pushed screens, then overlays. Each screen is built from
+   `design/derived/layout/<screenId>.json` (see "Layout tree" below) — never by re-reading the HTML and reconstructing it. One commit per screen or component.
 5. Wire ApiRoutes.* through one API client; seed previews and empty/offline states from entities.json.
 6. Write tests that reference the generated constants [T3]. Run the build and tests. Take screenshots.
 7. `precheck` → fix → `report`.
@@ -36,6 +37,21 @@ the human's compare page.
 ## Translation rules — design/ (HTML/CSS) → Jetpack Compose
 The prototype is web markup. Translate by these rules so iOS and Android read the same design the same way [P1].
 Do not copy pixel values that have a token; use the token [C3].
+
+### Layout tree — `design/derived/layout/<screenId>.json` (build from this)
+The server converts each screen's markup into a lossless node tree. Walk it top-down and emit one Compose node per tree node, keeping
+the nesting and order exactly — do not merge, reorder or drop nodes, and do not add containers the tree does not have.
+- `kind`: `if` (a `when` condition — realize it as a real conditional on that state key; `default` is the prototype's placeholder value) ·
+  `list` (`items` array, `as` item name — a ForEach/items over that entity list) · `row` / `column` / `grid` / `group` / `box` (containers) ·
+  `text` · `icon` (`icon` is an Icons.* name; `raw-svg` means no asset — report it) · `input` · `image`.
+- `style`: the element's CSS properties, every one of them. Values that are `DesignTokens.*` constants are used as-is; other values are the
+  literal CSS value (`12px`, `rgba(...)`, `linear-gradient(...)`, `45% 55% 50% 50%`) — translate them with the tables below. A property you cannot
+  express natively is a divergence to report, not something to silently skip.
+- `text`: a `Strings.*` constant (with `params` it is a format string — substitute the named values at runtime) · `bind`: a state key whose value is
+  shown · `raw_text`: copy with no Strings key — keep it verbatim and list it in `report.human_check`.
+- `on_click` / `on_*`: the handler name from behavior.json — call the same-named method.
+- `class` / `data-*` / `id`: carried for the shared CSS in the file's `<style>` (e.g. `[data-hide-scrollbar]`, `input[type=range]`) — apply that rule too.
+The HTML file is still there for anything the tree does not settle (an animation keyframe, a font-face), but the tree is the source of truth for structure.
 
 ### Layout
 | In the HTML | In Compose |

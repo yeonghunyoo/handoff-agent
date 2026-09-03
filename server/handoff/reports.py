@@ -146,6 +146,11 @@ def kickoff(root, cfg, role, st, t, handoff):
                  + (f"allowed font families: {', '.join(r['fonts'])}; " if r.get("fonts") else "")
                  + "tokens and Strings.* are mandatory [C3])")
     if os.path.isfile(os.path.join(dv, "strings.json")) and role != "backend":
+        for s in m.get("screens", []):
+            if os.path.isfile(os.path.join(util.design_dir(root), derive.DERIVED_DIR, "layout", f"{s['id']}.json")):
+                L.append(f"- design/derived/layout/{s['id']}.json   (screen `{s['id']}` as a lossless layout tree — BUILD FROM THIS: same nesting and order, "
+                         "every `style` property carried over, tokens/strings/icons already named as constants, `when`/`items`/`on_*` are the "
+                         "conditions, lists and handlers; `raw_text` marks copy that has no Strings key — keep it verbatim and list it in report.human_check)")
         L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3]; "
                  "entries with {name} placeholders are format strings — substitute the named value at runtime, never retype the text)")
     if os.path.isfile(os.path.join(dv, "icons.json")) and role != "backend":
@@ -157,7 +162,7 @@ def kickoff(root, cfg, role, st, t, handoff):
     if role != "backend":
         for s in m["screens"]:
             L.append(f"- design/{s['file']}" + (f"#{s['anchor']}" if s.get("anchor") else "")
-                     + f"   (screen `{s['id']}` — {s['title']}; the source of truth for layout, copy, states)")
+                     + f"   (screen `{s['id']}` — {s['title']}; the original markup the layout tree was derived from — open it only for a detail the tree does not settle)")
     else:
         L.append("- design/*.html   (screens — read them to understand what data each screen needs)")
     L.append(f"- api/openapi.yaml   (backend contract — {'implement every route' if role == 'backend' else 'call routes through ApiRoutes.*'})")

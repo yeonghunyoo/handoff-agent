@@ -16,11 +16,14 @@ import hashlib
 import html as htmlmod
 import json
 import os
+import shutil
 import re
+
+import html.parser as htmlparser
 
 from . import util
 
-DERIVED_DIR = "derived"
+DERIVED_DIR = "derived"                       # 문구·아이콘·모델·전이·컴포넌트·내비·의도·규칙 + layout/<screen>.json
 _STATE_OPEN = re.compile(r'<sc-if\s+value="\{\{\s*(\w+)\s*\}\}"')
 _TEXT_NODE = re.compile(r">([^<>{}]*[^\s<>{}][^<>{}]*)<")
 _MIXED_NODE = re.compile(r">([^<>]*\{\{[^<>]*)<")           # 글자 + {{ 바인딩 }} 이 섞인 노드 → 포맷 문구
@@ -715,7 +718,271 @@ def rules(adherence):
     return out
 
 
+# ─────────────────────────── layout — 화면별 무손실 레이아웃 트리 ───────────────────────────
+# 에이전트가 HTML 을 다시 읽어 화면을 "재구성"하지 않도록, 화면 구역의 마크업을 노드 트리로 그대로 옮긴다.
+# 스타일 속성은 하나도 버리지 않는다(무손실). 토큰(var(--x) · 값이 맞는 hex · 종류가 맞는 px)은 상수 이름으로,
+# 문구는 Strings 상수로, svg 는 Icons 이름으로 바꾼다. 실험(2026-09-04): 트리를 받은 빌더가 분기·바인딩을
+# 덜 빠뜨리고 토큰 4할을 덜 썼다. 빠뜨린 속성은 곧 충실도 손실이므로 KEEP 목록을 두지 않는다.
+
+_CSS_VAR = re.compile(r"var\(--([a-z0-9-]+)\)", re.I)
+_PX_TOKEN = re.compile(r"^-?(\d+(?:\.\d+)?)px$")
+_HEX_TOKEN = re.compile(r"^#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?$")
+_BIND_EXPR = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+_SPACE_PROPS = ("gap", "row-gap", "column-gap", "padding", "margin", "inset", "top", "left", "right", "bottom")
+_RADIUS_PROPS = ("border-radius", "border-top-left-radius", "border-top-right-radius", "border-bottom-left-radius", "border-bottom-right-radius")
+
+
+def dim_kind(key):
+    """치수 토큰 키 → 문맥 종류. radius.* → radius, space.*/spacing.*/gap.* → space, 그 외 None."""
+    k = str(key).lower()
+    if "radius" in k or k.startswith("corner"):
+        return "radius"
+    if k.startswith(("space", "spacing", "gap", "inset")):
+        return "space"
+    return None
+
+
+def _prop_kind(prop):
+    p = prop.lower()
+    if p in _RADIUS_PROPS:
+        return "radius"
+    if p in _SPACE_PROPS or p.startswith(("padding-", "margin-")):
+        return "space"
+    return None
+
+
+class _TokenMap:
+    def __init__(self, tokens):
+        from . import gen                                   # gen 은 derive 를 import 한다 — 지연 import
+        self.consts = gen.token_consts(tokens)
+        self.by_var = {k.replace(".", "-"): k for k in tokens}
+        self.dims = {}
+        self.colors = {}
+        for k, v in tokens.items():
+            if v.get("kind") == "dimension":
+                try:
+                    self.dims.setdefault(float(v["value"]), k)
+                except (TypeError, ValueError):
+                    pass
+            elif v.get("kind") == "color" and isinstance(v.get("value"), str) and v["value"].startswith("#"):
+                self.colors.setdefault(v["value"].lower()[:7], k)
+
+    def value(self, prop, val):
+        """CSS 값 문자열 → 토큰 상수가 있는 조각만 바꾼 문자열. 바인딩({{ }})은 손대지 않는다."""
+        if "{{" in val:
+            return val.strip()
+        out = _CSS_VAR.sub(lambda m: self.consts.get(self.by_var.get(m.group(1).lower(), ""), m.group(0)), val.strip())
+        kind = _prop_kind(prop)
+        parts = []
+        for tok in out.split():
+            m = _PX_TOKEN.match(tok)
+            if m and kind and not tok.startswith("-"):
+                key = self.dims.get(float(m.group(1)))
+                if key and dim_kind(key) == kind:
+                    parts.append(self.consts[key])
+                    continue
+            if _HEX_TOKEN.match(tok) and tok.lower()[:7] in self.colors:
+                parts.append(self.consts[self.colors[tok.lower()[:7]]])
+                continue
+            parts.append(tok)
+        return " ".join(parts)
+
+
+class _Node:
+    def __init__(self, tag, attrs):
+        self.tag, self.attrs, self.children, self.text = tag, dict(attrs), [], []
+
+
+class _TreeParser(htmlparser.HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Node("root", {})
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        n = _Node(tag, attrs)
+        self.stack[-1].children.append(n)
+        if tag not in _VOID:
+            self.stack.append(n)
+
+    def handle_startendtag(self, tag, attrs):
+        self.stack[-1].children.append(_Node(tag, attrs))
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, 0, -1):
+            if self.stack[i].tag == tag:
+                del self.stack[i:]
+                break
+
+    def handle_data(self, data):
+        if data.strip():
+            self.stack[-1].text.append(re.sub(r"\s+", " ", data).strip())
+
+
+def _screen_slice(markup, regions, sc):
+    """화면의 마크업 구역. 상태 분기 구역 → 그 anchor 의 sc-if 블록 → 파일 전체."""
+    best = None
+    for start, end, label in regions:
+        if label == sc["id"] and (best is None or end - start > best[1] - best[0]):
+            best = (start, end)
+    if best:
+        return markup[best[0]:best[1]]
+    anchor = sc.get("anchor")
+    if anchor:
+        m = re.search(r'<sc-if\s+value="\{\{\s*' + re.escape(anchor) + r'\s*\}\}"', markup)
+        if m:
+            depth = 0
+            for t in re.finditer(r"<sc-if\b|</sc-if>", markup[m.start():]):
+                depth += 1 if t.group(0).startswith("<sc-if") else -1
+                if depth == 0:
+                    return markup[m.start():m.start() + t.end()]
+        m = re.search(r'<[a-z][^>]*\bid="' + re.escape(anchor.lstrip("#")) + r'"', markup)
+        if m:
+            return markup[m.start():]
+    body = re.search(r"<body\b[^>]*>(.*)</body>", markup, re.S)
+    return body.group(1) if body else markup
+
+
+def _svg_hash(svg):
+    paths = "|".join(sorted(re.findall(r'\bd="([^"]+)"', svg) + re.findall(r"<(?:circle|rect)\b[^>]*>", svg)))
+    return hashlib.sha1(paths.encode()).hexdigest()[:6] if paths else None
+
+
+def _node_json(n, screen, tm, str_index, icon_by_hash, raw_markup):
+    from . import gen
+    out = {}
+    tag = n.tag
+    if tag == "sc-if":
+        out["kind"] = "if"
+        out["when"] = (n.attrs.get("value") or "").strip("{} ")
+        if "hint-placeholder-val" in n.attrs:
+            out["default"] = (n.attrs.get("hint-placeholder-val") or "").strip("{} ")
+    elif tag == "sc-for":
+        out["kind"] = "list"
+        out["items"] = (n.attrs.get("list") or "").strip("{} ")
+        out["as"] = n.attrs.get("as")
+        if "hint-placeholder-count" in n.attrs:
+            out["placeholder_count"] = n.attrs.get("hint-placeholder-count")
+    elif tag == "svg":
+        out["kind"] = "icon"
+        h = _svg_hash(raw_markup) if raw_markup else None
+        name = icon_by_hash.get(h)
+        out["icon"] = f"Icons.{gen.ident(name)}" if name else "raw-svg"
+        for k in ("width", "height", "viewbox"):
+            if k in n.attrs:
+                out[k] = n.attrs[k]
+        n = _Node(tag, {k: v for k, v in n.attrs.items() if k == "style"})   # 자식 path 는 아이콘 에셋에 있다 — 트리에 안 싣는다
+    elif tag == "input":
+        out["kind"] = "input"
+        for k in ("type", "min", "max", "step", "value", "placeholder"):
+            if k in n.attrs:
+                out[k] = n.attrs[k]
+    elif tag == "img":
+        out["kind"] = "image"
+        out["src"] = n.attrs.get("src")
+        if "alt" in n.attrs:
+            out["alt"] = n.attrs["alt"]
+    style = {}
+    for part in (n.attrs.get("style") or "").split(";"):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            k = k.strip().lower()
+            if k:
+                style[k] = tm.value(k, v)
+    if "kind" not in out:
+        disp, fd = style.get("display"), style.get("flex-direction")
+        if disp in ("flex", "inline-flex"):
+            out["kind"] = "column" if fd and fd.startswith("column") else "row"
+        elif disp == "grid":
+            out["kind"] = "grid"
+        elif n.text and not n.children:
+            out["kind"] = "text"
+        elif not n.children:
+            out["kind"] = "box"
+        else:
+            out["kind"] = "group"
+    if tag not in ("sc-if", "sc-for", "div", "span"):
+        out["tag"] = tag
+    for k, v in n.attrs.items():
+        if k in ("style", "value", "list", "as", "hint-placeholder-val", "hint-placeholder-count", "hint-size"):
+            continue
+        m = re.match(r"sc-camel-on-([a-z-]+)$", k)
+        if m:
+            out["on_" + m.group(1).replace("-", "_")] = (v or "").strip("{} ")
+        elif k.startswith("on") and v and "{{" in v:
+            out["on_" + k[2:].lower()] = v.strip("{} ")
+        elif k in ("class", "id", "role", "href", "aria-label", "title") or k.startswith(("data-", "hint-", "component-", "from")):
+            out[k] = v if v is not None else True
+    text = " ".join(n.text)
+    if text:
+        names = []
+
+        def _ph(b):
+            nm = re.split(r"[^\w]", b.group(1).strip())[-1] or "value"
+            nm = nm[:1].lower() + nm[1:]
+            names.append(nm)
+            return "{" + nm + "}"
+        fmt = _BIND_EXPR.sub(_ph, text)
+        lit = re.sub(r"\{\w+\}", "", fmt).strip()
+        key = (screen, fmt if names else text)
+        const = str_index.get(key) or str_index.get(("*", fmt if names else text))
+        if const:
+            out["text"] = const
+            if names:
+                out["params"] = names
+        elif names and not lit:
+            out["bind"] = names if len(names) > 1 else names[0]
+        else:
+            out["text"] = text
+            out["raw_text"] = True                           # Strings 에 없는 문구 — 파생이 못 잡은 것. 사람 확인 대상
+    if style:
+        out["style"] = style
+    kids = [_node_json(c, screen, tm, str_index, icon_by_hash, c._raw if hasattr(c, "_raw") else None) for c in n.children]
+    kids = [k for k in kids if k]
+    if kids:
+        out["children"] = kids
+    return out
+
+
+def layout(html, screens, comps, tokens, string_rows, icon_rows):
+    """{screen_id: 트리} — 화면 구역의 마크업을 무손실로. 스타일 속성은 전부 싣고, 토큰·문구·아이콘만 상수 이름으로 바꾼다."""
+    from . import gen
+    markup, regions = regions_of(html, list(screens), comps)
+    tm = _TokenMap(tokens or {})
+    str_index = {}
+    for r in string_rows:
+        grp, _, leaf = r["key"].partition(".")
+        const = f"Strings.{gen.ident(grp, upper=True)}.{gen.ident(leaf.replace('.', ' '))}"
+        str_index.setdefault((r["screen"], r["text"]), const)
+        str_index.setdefault(("*", r["text"]), const)
+    icon_by_hash = {i["hash"]: i["name"] for i in icon_rows if i.get("hash")}
+    out = {}
+    for sc in screens:
+        piece = _screen_slice(markup, regions, sc)
+        # svg 원문을 노드에 붙여 해시로 아이콘을 찾는다
+        svgs = [m.group(0) for m in _SVG.finditer(piece)]
+        p = _TreeParser()
+        p.feed(piece)
+        it = iter(svgs)
+
+        def _attach(node):
+            if node.tag == "svg":
+                node._raw = next(it, None)
+            for c in node.children:
+                _attach(c)
+        for c in p.root.children:
+            _attach(c)
+        roots = [_node_json(c, sc["id"], tm, str_index, icon_by_hash, None) for c in p.root.children]
+        roots = [r for r in roots if r]
+        out[sc["id"]] = roots[0] if len(roots) == 1 else {"kind": "group", "children": roots}
+    return out
+
+
 # ─────────────────────────── 조립 ───────────────────────────
+
+def _count_nodes(t):
+    return 1 + sum(_count_nodes(c) for c in t.get("children") or [])
+
 
 def _find(d, name):
     for base, dirs, names in os.walk(d):
@@ -740,10 +1007,12 @@ def write_all(root, manifest):
     nav = {"entry": None, "tabs": {}, "transitions": []}
     confirmed = manifest.get("components") if manifest.get("components_confirmed") else None
     seen_text, seen_icon, seen_comp = set(), {}, {}
+    htmls, comps_by_file = {}, {}
     for f, scs in by_file.items():
         html = util.read_text(os.path.join(d, f))
         if not html:
             continue
+        htmls[f] = html
         e = entities(html)
         ents.update({k: v for k, v in e.items() if k not in ents})
         b = behavior(html)
@@ -751,6 +1020,7 @@ def write_all(root, manifest):
         beh["tab_transitions"].update(b["tab_transitions"])
         beh["timers_ms"] = sorted(set(beh["timers_ms"]) | set(b["timers_ms"]))
         cs = components(html, scs, [c for c in (confirmed or []) if not c.get("file") or c["file"] == f])
+        comps_by_file[f] = cs
         # 파일 하나 = 화면 하나(상태 분기 없음)면 그 파일의 문구 전부가 그 화면 것이다
         single = scs[0]["id"] if len(scs) == 1 and not scs[0].get("anchor") else None
         for r in strings(html, scs, cs):
@@ -829,6 +1099,22 @@ def write_all(root, manifest):
                      for k, v in ents.items() if not k.startswith("_")},
         "strings": [{"key": r["key"], "screen": r["screen"]} for r in strs],
         "icons": [{"name": i["name"], "screens": i["screens"]} for i in ics]}
+    # 레이아웃 트리 — 문구·아이콘이 다 모인 뒤에
+    lay_dir = os.path.join(out_dir, "layout")
+    shutil.rmtree(lay_dir, ignore_errors=True)
+    os.makedirs(lay_dir, exist_ok=True)
+    summary["layout"] = {}
+    for f, scs in by_file.items():
+        if f not in htmls:
+            continue
+        try:
+            trees = layout(htmls[f], scs, comps_by_file.get(f) or [], manifest.get("tokens") or {}, strs, ics)
+        except Exception as e:                              # 트리는 보조물 — 실패해도 파생 전체를 막지 않는다
+            summary["layout"]["_error"] = f"{type(e).__name__}: {e}"
+            continue
+        for sid, tree in trees.items():
+            util.write_json(os.path.join(lay_dir, f"{sid}.json"), tree)
+            summary["layout"][sid] = _count_nodes(tree)
     turns = []
     for c in manifest.get("chats") or []:
         turns += intent(util.read_text(os.path.join(d, c)))

@@ -122,6 +122,7 @@
 | `components.json` | 클릭·입력·제스처 속성과 오버레이 스타일 블록 → 타입(`sheet` `modal` `popover` `tab` `button` `toggle` `input` `slider` `item` `gesture`) · 귀속 화면(상태 분기 + `renderVals` 의 탭 비교 플래그 + 오버레이 구역) | 매니페스트 `components` · 착수 프롬프트의 Components 절 |
 | `navigation.json` | 초기 state 의 `is*`=true 진입 화면 · `setTab` 전이 · 핸들러 본문의 state 리터럴(`tab: 'home'` · `settingsOpen: true`) | 매니페스트 `navigation` — 두 플랫폼이 같은 전이 그래프 |
 | `rules.json` | 디자인 시스템 `_adherence`(hex·px·폰트 금지) | `raw-font` 검출 등 검사 규칙이 디자인 시스템을 따라간다 |
+| `layout/<screen>.json` | 화면 구역의 마크업을 **무손실** 노드 트리로 — 스타일 속성 전부 + 토큰(`var(--x)`·값이 맞는 hex·종류가 맞는 px)은 `DesignTokens.*`, 문구는 `Strings.*`(포맷은 `params`), svg 는 `Icons.*`, `sc-if`→`when`, `sc-for`→`items/as`, 핸들러→`on_*` | 빌더가 HTML 을 다시 읽어 화면을 재구성하지 않고 트리를 그대로 옮긴다. 실측(2026-09-04, 화면 2×플랫폼 2×2회): 분기·바인딩 누락이 줄고 빌더 토큰 −39% · 시간 −58% |
 
 ## Claude Design 과의 연결 — `/claude-design`
 

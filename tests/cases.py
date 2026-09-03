@@ -420,6 +420,22 @@ def test_derive():
           and not any(i["kind"] in ("string", "handler") for i in checks.items("backend", checks.targets(root))), sorted(kinds))
     check("derive: 프롬프트 — 문구는 그룹 한 줄 · 핸들러 항목 · 포맷 안내", "Strings.Home.*" in p and "each one is a checklist item" in p
           and "HND-01  handler" in p and "{name} placeholders are format strings" in p, p[:2500])
+    lay = derive.read(root, "layout/home.json")
+    lj = json.dumps(lay, ensure_ascii=False)
+    check("layout: home 트리 — if 루트 · 문구 상수 · 포맷 params · 아이콘 · 핸들러", lay["kind"] == "if" and lay["when"] == "isHome"
+          and "Strings.Home.chucheonMiksing" in lj and '"params": ["streakCount"]' in lj and '"on_click": "p.open"' in lj
+          and '"kind": "icon"' in lj and '"icon": "Icons.' in lj and "raw_text" not in lj, lj[:800])
+    lay2 = derive.read(root, "layout/onboarding.json")
+    check("layout: onboarding — 바인딩 텍스트 · 토큰 없는 값은 그대로", '"bind": "title"' in json.dumps(lay2) or '"bind": "obButtonLabel"' in json.dumps(lay2), lay2)
+    check("layout: 착수 프롬프트가 트리를 먼저 가리킨다", "design/derived/layout/home.json" in p and "BUILD FROM THIS" in p
+          and p.index("design/derived/layout/home.json") < p.index("design/forest.dc.html#isHome"), p[:2500])
+    trees = derive.layout('<div style="display:flex;gap:16px;padding:8.8px;border-radius:16px;color:#c67139;width:16px"><span>기록</span></div>',
+                          [{"id": "s", "title": "S"}], [], {"space.2": {"kind": "dimension", "value": 8.8}, "radius.md": {"kind": "dimension", "value": 16},
+                                                            "color.accent": {"kind": "color", "value": "#c67139"}}, [{"key": "s.girok", "text": "기록", "screen": "s"}], [])
+    st = trees["s"]["style"]
+    check("layout: 토큰 해소 — 종류 맞는 px 만 · hex · width 는 값 그대로", st["gap"] == "16px" and st["padding"] == "DesignTokens.Space._2"
+          and st["border-radius"] == "DesignTokens.Radius.md" and st["color"] == "DesignTokens.Color.accent" and st["width"] == "16px"
+          and trees["s"]["children"][0]["text"] == "Strings.S.girok", st)
     px = derive.px_match(['<style>--space-2:8.8px</style><div style="padding:16px;gap:12px;width:8px;border-radius:16px">'],
                          {"a": {"kind": "dimension", "value": 16}, "b": {"kind": "dimension", "value": 8.8}, "c": {"kind": "color", "value": "#fff"}})
     check("derive: 토큰/px 일치율", px == {"dims": 2, "dims_used": 1, "px": 4, "px_matched": 2}, px)
@@ -566,6 +582,8 @@ def test_generation():
     m = design.scan(root)
     files = gen.expected(root, cfg, 1, m, api.validate(OPENAPI))
     names = sorted(os.path.basename(f) for f in files)
+    check("layout: 파일 화면도 트리가 있다", os.path.isfile(os.path.join(root, "design", "derived", "layout", "orderList.json"))
+          and derive.read(root, "layout/orderList.json")["kind"] in ("group", "column", "row", "box", "text"), derive.read(root, "layout/orderList.json"))
     check("gen: 6종 × 2 (Strings 포함)", names == sorted(["ApiRoutes.kt", "ApiRoutes.swift", "DesignTokens.kt", "DesignTokens.swift",
                                                       "Screens.kt", "Screens.swift", "Strings.kt", "Strings.swift"]), names)
     check("gen: Strings 는 화면별 그룹 (파일 = 화면)", "public enum Strings {" in files["shared/generated/Strings.swift"]
