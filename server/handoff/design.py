@@ -23,7 +23,8 @@ import zipfile
 from . import util
 
 SKIP_DIRS = {"assets", "asset", "images", "img", "fonts", "node_modules", "__MACOSX", "js", "styles", "uploads", "screenshots"}
-MANIFEST_NAME = "handoff.manifest.json"       # 사람이 확정한 화면 목록 — design/ 안에 살아 지문에 든다
+MANIFEST_NAME = "handoff.manifest.json"       # 사람이 확정한 화면·컴포넌트 + 서버가 채운 상세 — design/ 안에 살아 지문에 든다
+MANIFEST_VERSION = 2
 IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 HTML_EXT = (".html", ".htm")
 
@@ -278,15 +279,34 @@ def _title_of(html, fallback):
     return t or fallback
 
 
+def _component_rows(items):
+    """[{id, type, title, file?, anchor?, screen?}] 로 정규화. type 은 derive.COMPONENT_TYPES 중 하나, 모르면 button."""
+    from . import derive
+    rows = []
+    for c in items or []:
+        if isinstance(c, str):
+            rows.append({"id": derive.slug(c), "type": "button", "title": c})
+        elif isinstance(c, dict) and (c.get("id") or c.get("title")):
+            typ = str(c.get("type") or "button").lower()
+            rows.append({"id": derive.slug(str(c.get("id") or c["title"])), "type": typ if typ in derive.COMPONENT_TYPES else "button",
+                         "title": str(c.get("title") or c["id"]), "file": c.get("file"), "anchor": c.get("anchor"),
+                         "screen": c.get("screen")})
+    return rows
+
+
 def _manifest_override(d):
-    """패키지가 스스로 매니페스트를 갖고 있으면 (최상위 json 에 screens/tokens) 그것을 쓴다."""
-    screens, tokens = None, {}
+    """패키지가 스스로 매니페스트를 갖고 있으면 (최상위 json 에 screens/tokens/components) 그것을 쓴다.
+    반환: (screens, tokens, components, components_confirmed)."""
+    screens, tokens, comps, comps_ok = None, {}, [], False
     for n in sorted(os.listdir(d)):
         if not n.endswith(".json"):
             continue
         obj = util.read_json(os.path.join(d, n))
         if not isinstance(obj, dict):
             continue
+        if isinstance(obj.get("components"), list) and not comps:
+            comps = _component_rows(obj["components"])
+            comps_ok = bool(obj.get("components_confirmed"))
         sc = obj.get("screens")
         if isinstance(sc, list) and sc and screens is None:
             screens = []
@@ -301,9 +321,9 @@ def _manifest_override(d):
                     screens.append({"id": slug(str(name)), "file": f, "anchor": s.get("anchor"),
                                     "title": str(s.get("title") or s.get("name") or name)})
         tk = obj.get("tokens")
-        if isinstance(tk, dict):
+        if isinstance(tk, dict) and n != MANIFEST_NAME:      # 우리 매니페스트의 tokens 는 요약(count·kinds)이지 정의가 아니다
             tokens.update(_flatten_tokens(tk))
-    return screens, tokens
+    return screens, tokens, comps, comps_ok
 
 
 def _flatten_tokens(obj, prefix=""):
@@ -368,7 +388,7 @@ def scan(root):
     images = [f for f in everything if f.lower().endswith(IMG_EXT)]
 
     # 화면
-    override, tokens = _manifest_override(d)
+    override, tokens, comps, comps_ok = _manifest_override(d)
     screens = []
     if override:
         for s in override:
@@ -442,18 +462,15 @@ def scan(root):
     for s in screens:
         s["shots"] = shots[s["id"]]
 
-    used = set(htmls) | set(boards) | set(docs) | set(chats) | set(images)
+    used = set(htmls) | set(boards) | set(docs) | set(chats) | set(images) | {MANIFEST_NAME}
     assets = [f for f in everything if f not in used]
     return {"hash": util.tree_hash(d), "screens": screens, "tokens": tok, "boards": boards,
             "docs": docs, "chats": chats, "assets": assets, "files": len(everything),
+            "components": comps, "components_confirmed": comps_ok,
             "confirmed": os.path.isfile(os.path.join(d, MANIFEST_NAME))}
 
 
-def confirm_screens(root, screens):
-    """사람이 확정한 화면 목록을 design/handoff.manifest.json 으로 쓴다. [{id, title, file?, anchor?}]"""
-    d = util.design_dir(root)
-    if not os.path.isdir(d):
-        raise DesignError("design/ 가 없다")
+def _screen_rows(screens):
     rows = []
     for s in screens or []:
         if isinstance(s, str):
@@ -461,10 +478,79 @@ def confirm_screens(root, screens):
         elif isinstance(s, dict) and (s.get("id") or s.get("title")):
             rows.append({"id": slug(str(s.get("id") or s["title"])), "title": str(s.get("title") or s["id"]),
                          "file": s.get("file"), "anchor": s.get("anchor")})
+    return rows
+
+
+def confirm_screens(root, screens=None, components=None):
+    """사람이 확정한 화면·컴포넌트 목록을 design/handoff.manifest.json 으로 쓴다.
+    screens [{id, title, file?, anchor?}] · components [{id, type, title, file?, anchor?, screen?}].
+    한쪽만 주면 다른 쪽은 기존 매니페스트의 것을 유지한다. 상세(내비게이션·문구·아이콘·모델)는 write_manifest 가 채운다."""
+    d = util.design_dir(root)
+    if not os.path.isdir(d):
+        raise DesignError("design/ 가 없다")
+    path = os.path.join(d, MANIFEST_NAME)
+    prev = util.read_json(path) if os.path.isfile(path) else {}
+    prev = prev if isinstance(prev, dict) else {}
+    rows = _screen_rows(screens) if screens else _screen_rows(prev.get("screens"))
     if not rows:
         raise DesignError("화면 목록이 비었다")
-    util.write_json(os.path.join(d, MANIFEST_NAME), {"screens": rows})
+    comps = _component_rows(components) if components else _component_rows(prev.get("components"))
+    comps_ok = bool(components) or bool(prev.get("components_confirmed"))
+    util.write_json(path, {"version": MANIFEST_VERSION, "screens": rows, "components": comps, "components_confirmed": comps_ok})
     return rows
+
+
+def write_manifest(root, m, detail):
+    """확정된 매니페스트에 서버 파생 상세를 채워 다시 쓴다 — 화면(구성 컴포넌트·문구 키·아이콘·스크린샷),
+    컴포넌트(타입·귀속 화면·핸들러·열고 닫는 핸들러), 내비게이션(진입·탭·전이), 초기 state, 모델 요약,
+    문구·아이콘·토큰 요약, 문서·대화·자산. 사람이 확정한 것(화면 목록, components_confirmed 인 컴포넌트의
+    id·type·title)은 그대로 두고 나머지는 design/ 에서 결정적으로 다시 계산한다 — 시각 같은 비결정 값은 넣지 않는다."""
+    d = util.design_dir(root)
+    path = os.path.join(d, MANIFEST_NAME)
+    if not os.path.isfile(path):
+        return None
+    detail = detail or {}
+    derived = detail.get("components") or []
+    if m.get("components_confirmed"):
+        by_id = {c["id"]: c for c in derived}
+        by_anchor = {c.get("anchor"): c for c in derived if c.get("anchor")}
+        comps = []
+        for c in m["components"]:
+            base = dict(by_id.get(c["id"]) or by_anchor.get(c.get("anchor")) or {})
+            base.update({k: v for k, v in c.items() if v is not None})
+            comps.append(base)
+        known = {c["id"] for c in comps} | {c["anchor"] for c in comps if c.get("anchor")}
+        comps += [c for c in derived if c["id"] not in known and (c.get("anchor") or c["id"]) not in known]
+    else:
+        comps = derived
+    strs, ics = detail.get("strings") or [], detail.get("icons") or []
+    screens = []
+    for s in m["screens"]:
+        screens.append({"id": s["id"], "title": s["title"], "file": s.get("file"), "anchor": s.get("anchor"),
+                        "components": [c["id"] for c in comps if s["id"] in (c.get("screens") or [c.get("screen")])],
+                        "strings": [r["key"] for r in strs if r["screen"] == s["id"]],
+                        "icons": [i["name"] for i in ics if s["id"] in i["screens"]],
+                        "shots": s.get("shots") or []})
+    for c in comps:
+        if c["type"] in ("sheet", "modal", "popover"):
+            c["children"] = [x["id"] for x in comps if x is not c and c["id"] in (x.get("screens") or [x.get("screen")])]
+            c["strings"] = [r["key"] for r in strs if r["screen"] == c["id"]]
+            c["icons"] = [i["name"] for i in ics if c["id"] in i["screens"]]
+    kinds = {}
+    for v in m["tokens"].values():
+        kinds[v["kind"]] = kinds.get(v["kind"], 0) + 1
+    doc = {"version": MANIFEST_VERSION, "screens": screens, "components": comps,
+           "components_confirmed": bool(m.get("components_confirmed")),
+           "component_types": {t: sum(1 for c in comps if c["type"] == t) for t in sorted({c["type"] for c in comps})},
+           "navigation": detail.get("navigation") or {}, "state": detail.get("state") or {},
+           "entities": detail.get("entities") or {},
+           "strings": {"count": len(strs), "file": "derived/strings.json"},
+           "icons": {"count": len(ics), "file": "derived/icons.json", "names": [i["name"] for i in ics]},
+           "tokens": {"count": len(m["tokens"]), "kinds": kinds},
+           "docs": m.get("docs") or [], "chats": m.get("chats") or [], "boards": m.get("boards") or [],
+           "assets": m.get("assets") or []}
+    util.write_json(path, doc)
+    return doc
 
 
 def manifest(root):

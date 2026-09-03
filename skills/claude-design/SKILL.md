@@ -28,7 +28,7 @@ Claude Design 은 웹 제품이다(claude.ai/design · Claude Desktop 사이드�
 | 컨텍스트 첨부 (스크린샷 · 코드베이스) | 웹. 큰 레포는 렉이 나므로 `/design-sync` 로 시스템만 올리라는 공식 권고를 전한다 |
 | 프로젝트 파일 읽기 (`*.dc.html` · `_ds/` · 스크린샷) | 커넥터 → 없으면 DesignSync `get_project`/`list_files`/`get_file` (projectId 직접) |
 | Export: Download .zip · standalone HTML · PDF · PPTX · Canva/외부 툴 | 웹에서 받는다. zip/tar.gz/standalone HTML 은 **`import_design(path)`** 가 그대로 읽는다 (번들은 자동으로 펼친다). 펼치기만 원하면 `python3 <플러그인 루트>/server/run.py unbundle <file.html> <폴더>` |
-| Handoff to Claude Code — local | 커넥터가 있으면 프롬프트대로 `Import this Claude Design project … <링크>`. 없으면 "**Download zip instead**" 체크 → 받은 파일을 `import_design` |
+| Handoff to Claude Code — local | "**Download zip instead**" 체크 → 받은 zip 을 `import_design` 이 **기본**(컨텍스트 0). 커넥터 경로(`Import this Claude Design project … <링크>`)는 작은 프로젝트용 — 절차 B 의 크기 규칙을 따른다 |
 | Handoff to Claude Code — Web | Claude Code Web 세션에서 번들이 바로 열린다. 로컬 레포로 가져오려면 zip 을 받는다 |
 | 공유 (view · comment · edit 링크) · 다중 편집 | 웹 전용. 다중 편집은 불안정하다고 문서가 적는다 |
 | 사용량 | 채팅·Claude Code·Cowork 과 **같은 풀**. 한도에 닿으면 Claude Design 도 멈춘다 — 실패가 사용량 때문일 수 있음을 안내한다 |
@@ -45,17 +45,25 @@ Claude Design 은 웹 제품이다(claude.ai/design · Claude Desktop 사이드�
    → 세션 재시작 → `/mcp` 에서 `claude-design` 인증.
 3. 붙은 뒤 이름이 `mcp__claude-design__*` 인 도구들을 **먼저 나열해 보고**(ToolSearch `+claude-design`) 무엇이 되는지 파악한다 — 도구 이름은 서버가 정하며 여기 적지 않는다. 프로젝트 목록·파일 읽기·핸드오프 번들 받기 류가 있으면 그것을 B 의 1순위로 쓴다.
 
-### B. 프로젝트 가져오기 (링크 → `design/`)
+### B. 프로젝트 가져오기 (링크 → 스테이징 → `design/`)
 
 입력: `https://claude.ai/design/p/<projectId>?file=<이름>.dc.html…` 또는 projectId.
 
-1. 커넥터가 있으면 커넥터로 프로젝트/파일을 받아 `design/` 에 쓴다.
-2. 없으면 DesignSync — 인증이 안 돼 있으면 `/design-login` 을 안내한다:
-   - `get_project(projectId)` 이름 확인 → `list_files(projectId)` → `get_file` 로 하나씩 읽어 `design/<같은 경로>` 에 쓴다.
+커넥터든 DesignSync 든 **파일 본문이 모델 컨텍스트를 지나고 256 KiB 상한**이 있다. zip 내보내기(C)는 서버가 로컬에서
+풀어 컨텍스트를 안 쓴다 — 큰 프로젝트는 링크를 고집하지 말고 C 를 권한다.
+
+1. `get_project(projectId)` 이름 확인 → `list_files(projectId)` 로 목록과 **크기**를 본다. 256 KiB 넘는 파일이 여럿이거나
+   합계 1 MiB 초과면 사용자에게 `Export → Handoff → Download zip` 을 부탁하고 멈춘다.
+2. 보호 구역 밖 스테이징 폴더(세션 스크래치패드, 없으면 `mktemp -d`)를 만든다. **`design/` 에 직접 쓰지 않는다** — 훅이
+   막고, 막히면 우회하지 말고 스테이징으로 간다.
+3. 파일을 읽어 `<스테이징>/<같은 경로>` 에 쓴다. 커넥터 `read_file` 이 1순위, 없으면 DesignSync `get_file`
+   (인증이 안 돼 있으면 `/design-login` 안내).
    - 받는 것: `*.dc.html` · `*.jsx` · `*.md` · `_ds/**/{readme.md, styles.css, _ds_manifest.json}` · `screenshots/*` · `chats/*`.
      건너뛰는 것: `_ds_bundle.js` · `support.js` · `.thumbnail` · `uploads/*`(참고 사진, 크면 뺀다).
-   - `get_file` 은 256 KiB 상한 — 넘는 파일은 사용자에게 standalone HTML/zip 내보내기를 부탁한다.
-3. `import_design(path="design")` → 화면 후보를 보이고 확정받는다 (`/handoff` ① 과 같다).
+   - 256 KiB 넘는 파일: `read_file` 의 `offset/limit` 로 줄 범위를 나눠 끝까지 읽어 이어 붙인다. 잘린 응답을 그대로
+     쓰지 않는다. DesignSync `get_file` 은 나눠 읽기가 없으므로 그 경우 C 로 보낸다.
+   - 본문은 HTML 엔티티(`&amp; &lt; &gt;`)로 이스케이프돼 온다 — 되돌려 쓰고, 이어 붙인 파일은 줄 수·마지막 줄을 확인한다.
+4. `import_design(path=<스테이징 절대경로>)` → 서버가 `design/` 로 옮기고 화면 후보를 보인다. 확정은 `/handoff` ① 과 같다.
 
 ### C. 내보낸 파일 받기
 

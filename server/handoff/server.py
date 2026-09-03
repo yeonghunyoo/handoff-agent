@@ -58,12 +58,14 @@ def setup() -> dict:
 
 
 @mcp.tool()
-def import_design(path: str = "", screens: list | None = None) -> dict:
-    """① Claude Design 산출물을 design/ 로 가져오고 화면·토큰·문서를 발견한다. path: 핸드오프 zip/tar.gz ·
-    standalone HTML 내보내기(번들을 펼친다) · 폴더. 응답의 화면 후보를 사용자에게 보여 확정받고, 고칠 게 있으면
-    path 없이 screens=[{id,title,file,anchor}] 로 다시 부른다 (design/handoff.manifest.json 에 기록).
+def import_design(path: str = "", screens: list | None = None, components: list | None = None) -> dict:
+    """① Claude Design 산출물을 design/ 로 가져오고 화면·컴포넌트·토큰·문서를 발견한다. path: 핸드오프 zip/tar.gz ·
+    standalone HTML 내보내기(번들을 펼친다) · 폴더. 응답의 화면 후보와 컴포넌트(타입: sheet·modal·popover·tab·
+    button·toggle·input·slider·item·gesture) 목록을 사용자에게 보여 확정받고, 고칠 게 있으면 path 없이
+    screens=[{id,title,file,anchor}] · components=[{id,type,title,anchor}] 로 다시 부른다. 확정되면
+    design/handoff.manifest.json 에 화면·컴포넌트·내비게이션·state·모델·문구·아이콘·토큰 상세가 실린다.
     done 상태에서 부르면 새 사이클을 연다."""
-    return tools.import_design(ROOT, path or None, screens)
+    return tools.import_design(ROOT, path or None, screens, components)
 
 
 @mcp.tool()

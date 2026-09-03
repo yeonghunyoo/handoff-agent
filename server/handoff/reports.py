@@ -12,13 +12,24 @@ import json
 import os
 import shutil
 
-from . import checks, flow, git, leaks, util
+from . import checks, derive, flow, git, leaks, util
 
 SCREENS_DIR = "handoff-screens"
 
 
 def _esc(s):
     return html.escape(str(s if s is not None else ""), quote=True)
+
+
+def _components_of(root, m):
+    """매니페스트의 컴포넌트(확정 뒤에는 상세가 채워진 것), 확정 전이면 derived/components.json."""
+    m = m or {}
+    if m.get("confirmed"):
+        p = os.path.join(util.design_dir(root), "handoff.manifest.json")
+        doc = util.read_json(p) if os.path.isfile(p) else None
+        if isinstance(doc, dict) and isinstance(doc.get("components"), list) and doc["components"]:
+            return doc["components"]
+    return (derive.read(root, "components.json") or {}).get("components") or []
 
 
 def _write(root, name, text):
@@ -104,6 +115,10 @@ def kickoff(root, cfg, role, st, t, handoff):
         L.append("- design/derived/entities.json   (data arrays + initial state from the prototype — the domain model and seed data)")
     if os.path.isfile(os.path.join(dv, "behavior.json")):
         L.append("- design/derived/behavior.json   (handlers → state keys they set, tab transitions, timers — implement the same transitions)")
+    if os.path.isfile(os.path.join(util.design_dir(root), "handoff.manifest.json")):
+        L.append("- design/handoff.manifest.json   (the full index: screens with their components/strings/icons, typed components, navigation graph, initial state, entity summary)")
+    if os.path.isfile(os.path.join(dv, "components.json")) and role != "backend":
+        L.append("- design/derived/components.json + navigation.json   (every interactive element typed — sheet/modal/popover/tab/button/toggle/input/slider/item/gesture — and the entry screen, tabs, transitions)")
     if os.path.isfile(os.path.join(dv, "strings.json")) and role != "backend":
         L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3])")
     if os.path.isfile(os.path.join(dv, "icons.json")) and role != "backend":
@@ -125,6 +140,26 @@ def kickoff(root, cfg, role, st, t, handoff):
                  + (f", DesignTokens{ext}" if m.get("tokens") else "")
                  + (f", Strings{ext}, Icons{ext}" if os.path.isdir(dv) else "")
                  + "   (consume; never edit) [C2][C3]")
+    comps = _components_of(root, m)
+    if comps and role != "backend":
+        L += ["", "## Components (typed — build each as its type on the platform; overlays are NOT screens)"]
+        for typ in derive.COMPONENT_TYPES:
+            for c in (x for x in comps if x.get("type") == typ):
+                extra = []
+                if c.get("open"):
+                    extra.append("opened by " + ", ".join(c["open"]))
+                if c.get("close"):
+                    extra.append("closed by " + ", ".join(c["close"]))
+                if c.get("handler") and typ not in ("sheet", "modal", "popover"):
+                    extra.append(f"handler {c['handler']}")
+                if c.get("target"):
+                    extra.append(f"→ {c['target']}")
+                if c.get("bind"):
+                    extra.append(f"binds {c['bind']}")
+                if c.get("children"):
+                    extra.append("contains " + ", ".join(c["children"]))
+                L.append(f"- {typ:8} `{c['id']}` — {c.get('title') or c['id']} (in {c.get('screen') or 'shared'}"
+                         + (f"; {'; '.join(extra)}" if extra else "") + ")")
     L += ["", "## Decisions (human-made — do not re-decide)"]
     stack = spec.get("stack") or {}
     infra = spec.get("infra") or {}
@@ -314,6 +349,21 @@ def dashboard(root, cfg, st, routes=None, result=None, handoff=None):
     P.append("</div>")
     if m.get("docs"):
         P.append("<p class=meta>문서: " + ", ".join(f"<code>design/{_esc(d)}</code>" for d in m["docs"]) + "</p>")
+
+    # 컴포넌트 (타입별)
+    comps = _components_of(root, m)
+    P.append(f"<h2>컴포넌트 — {len(comps)}개" + (" (사람 확정)" if m.get("components_confirmed") else " (서버 추출)") + "</h2>")
+    if comps:
+        P.append("<details open><summary>" + " · ".join(f"{t} {sum(1 for c in comps if c.get('type') == t)}" for t in derive.COMPONENT_TYPES
+                                                       if any(c.get("type") == t for c in comps))
+                 + "</summary><table><tr><th>타입</th><th>id</th><th>제목</th><th>화면</th><th>핸들러 / 열기·닫기</th></tr>")
+        for typ in derive.COMPONENT_TYPES:
+            for c in (x for x in comps if x.get("type") == typ):
+                h = ", ".join(c.get("open") or []) + (" / " + ", ".join(c["close"]) if c.get("close") else "") \
+                    if typ in ("sheet", "modal", "popover") else (c.get("handler") or "")
+                P.append(f"<tr><td>{_esc(typ)}</td><td><code>{_esc(c['id'])}</code></td><td>{_esc(c.get('title') or '')}</td>"
+                         f"<td>{_esc(c.get('screen') or 'shared')}</td><td><code>{_esc(h)}</code></td></tr>")
+        P.append("</table></details>")
 
     # 토큰
     toks = m.get("tokens") or {}

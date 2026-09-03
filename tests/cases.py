@@ -258,6 +258,7 @@ def test_bundle_and_states():
     m = design.scan(root)
     check("bundle: 사람 확정 목록이 우선", r["confirmed"] and [s["id"] for s in m["screens"]] == ["onboarding", "home", "nowPlaying"]
           and m["screens"][2]["anchor"] == "nowPlayingOpen" and os.path.isfile(os.path.join(root, "design", design.MANIFEST_NAME)), m["screens"])
+    check("bundle: 응답에 컴포넌트·내비", isinstance(r["components"], list) and "entry" in r["navigation"] and "컴포넌트" in r["message"], r["message"])
     # CLI 로 펼치기만
     out = os.path.join(os.path.dirname(root), "unb")
     r_ = subprocess.run([sys.executable, os.path.join(HERE, "..", "server", "run.py"), "unbundle", b, out], capture_output=True, text=True)
@@ -358,6 +359,35 @@ def test_derive():
     check("derive: 의도 로그 (Continuing 제외)", "온보딩 건너뛰기는 홈으로" in intent and "1a 채택" in intent and "Continuing" not in intent)
     m = design.scan(root)
     check("derive: derived/ 는 문서·화면으로 안 센다", m["docs"] == [] and len(m["screens"]) == 4 and m["chats"] == ["chats/conversation.json"], (m["docs"], m["chats"]))
+    # 컴포넌트 — 타입 분류 · 화면 귀속 (설정 시트는 사람이 화면으로 승격했으니 오버레이 컴포넌트가 아니다)
+    cj = {c["id"]: c for c in derive.read(root, "components.json")["components"]}
+    check("derive: 컴포넌트 타입·귀속", cj["skipOnboarding"]["type"] == "button" and cj["skipOnboarding"]["title"] == "건너뛰기"
+          and cj["skipOnboarding"]["screen"] == "onboarding" and cj["setTabHome"]["type"] == "tab" and cj["setTabHome"]["target"] == "home"
+          and cj["closeSettings"]["screen"] == "settings" and cj["closeSettings"]["icon"] is True
+          and not any(c["type"] == "sheet" for c in cj.values()) and dv["components"] == {"button": 3, "tab": 2}, cj)
+    ov = derive.components(PROTO, [{"id": "onboarding", "anchor": "isOnboarding"}, {"id": "home", "anchor": "isHome"}])
+    sh = next((c for c in ov if c["type"] == "sheet"), None)
+    check("derive: 오버레이 → sheet 컴포넌트 (열고 닫는 핸들러 · anchor · 안의 버튼 귀속)",
+          sh and sh["id"] == "settingsSheet" and sh["anchor"] == "settingsOpen" and sh["open"] == ["openSettings"] and sh["close"] == ["closeSettings"]
+          and next(c["screen"] for c in ov if c["id"] == "closeSettings") == "settingsSheet", ov)
+    nav = derive.read(root, "navigation.json")
+    check("derive: 내비게이션 — 진입 · 탭 · 전이", nav["entry"] == "onboarding" and nav["tabs"] == {"setTabHome": "home", "setTabStats": "stats"}
+          and {"via": "skipOnboarding", "to": "home", "action": "go"} in nav["transitions"]
+          and {"via": "openSettings", "to": "settings", "action": "go"} not in nav["transitions"], nav)
+    man = json.load(open(os.path.join(d, design.MANIFEST_NAME), encoding="utf-8"))
+    check("derive: 매니페스트 v2 상세 — 화면별 컴포넌트·문구·아이콘 · 내비 · state · 모델 · 요약",
+          man["version"] == 2 and man["navigation"]["entry"] == "onboarding" and "skipOnboarding" in man["screens"][0]["components"]
+          and "onboarding.geonneottwigi" in man["screens"][0]["strings"] and "tabHome" in man["screens"][1]["icons"] + man["screens"][0]["icons"] + man.get("icons", {}).get("names", [])
+          and man["state"]["tab"] == "home" and man["entities"]["PRESETS"] == {"count": 1, "fields": ["desc", "id", "name", "volumes"]}
+          and man["strings"]["count"] == dv["strings"] and man["tokens"]["count"] == 3 and man["components_confirmed"] is False
+          and man["component_types"] == {"button": 3, "tab": 2}, man)
+    # 사람이 컴포넌트를 확정 — 준 것은 이름·타입이 이기고 나머지는 서버 추출이 채운다
+    r2 = tools.import_design(root, None, components=[{"id": "skipOnboarding", "type": "button", "title": "건너뛰기 버튼"}])
+    man = json.load(open(os.path.join(d, design.MANIFEST_NAME), encoding="utf-8"))
+    c0 = {c["id"]: c for c in man["components"]}
+    check("derive: 컴포넌트 확정 병합", r2["ok"] and man["components_confirmed"] is True and c0["skipOnboarding"]["title"] == "건너뛰기 버튼"
+          and c0["skipOnboarding"]["screen"] == "onboarding" and "setTabHome" in c0 and [s["id"] for s in man["screens"]] == ["onboarding", "home", "stats", "settings"],
+          (r2.get("message"), list(c0)))
     # 생성 상수 + 검사
     tools.spec_save(root, SPEC); tools.api_submit(root, OPENAPI); tools.review(root, approver=APPROVE)
     r = tools.build(root)
@@ -368,6 +398,9 @@ def test_derive():
     p = r["prompts"]["ios"]
     check("derive: 프롬프트 — intent 먼저 · ICN 항목 · Strings/Icons", "design/derived/intent.md" in p and "ICN-01" in p and "Icons.tabHome" in p
           and "Strings.swift, Icons.swift" in p, p[:1500])
+    check("derive: 프롬프트 — 컴포넌트(타입) 목록 · 매니페스트", "## Components" in p and "tab      `setTabHome` — 홈 (in shared; handler setTabHome; → home)" in p
+          and "design/handoff.manifest.json" in p and "button   `skipOnboarding` — 건너뛰기 버튼" in p, p)
+    check("derive: 대시보드 — 컴포넌트 표", "컴포넌트 — 5개 (사람 확정)" in open(os.path.join(root, "docs", "handoff-dashboard.html"), encoding="utf-8").read())
     # 검사: 한글 리터럴 = raw-string, 미허용 폰트 = raw-font, 아이콘 소비
     t = wt(root, "ios")
     w(os.path.join(t, "apps/ios/Main.swift"), 'let a = Strings.Onboarding.geonneottwigi\nlet b = Text("건너뛰기")\nlet f = Font.custom("Inter", size: 12)\n'

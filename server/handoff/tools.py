@@ -126,19 +126,24 @@ MCP 도구 `status` 를 부르고 `next` 를 따른다.** 절차는 `/handoff` �
 
 # ─────────────────────────── ① 패키지 ───────────────────────────
 
-def import_design(root, path=None, screens=None):
+def import_design(root, path=None, screens=None, components=None):
     cfg, st = _st(root)
     if flow.idx(st["phase"]) > flow.idx("review") and st["phase"] != "done":
         return _refuse(flow.require(st, "import", "spec", "api", "review", "done"))
     try:
         src = design.import_package(root, path) if path else os.path.basename(util.design_dir(root))
-        if screens:
-            design.confirm_screens(root, screens)
+        if screens or components:
+            design.confirm_screens(root, screens, components)
         m = design.scan(root)
-        dv = derive.write_all(root, m)          # 파생물(문구·아이콘·모델·전이·의도·규칙) — 지문에 든다
+        dv = derive.write_all(root, m)          # 파생물(문구·아이콘·모델·전이·컴포넌트·내비·의도·규칙) — 지문에 든다
+        detail = dv.pop("_detail", None) or {}
+        if m.get("confirmed"):
+            design.write_manifest(root, m, detail)   # 확정 매니페스트에 상세를 채운다
         m = design.scan(root)
     except design.DesignError as e:
         return _refuse(f"패키지를 못 읽었다: {e}")
+    comps = m["components"] if m.get("confirmed") else (detail.get("components") or [])
+    overlays = [c for c in comps if c["type"] in ("sheet", "modal", "popover")]
     if st["phase"] == "done":
         st["cycle"] += 1
     spec_ok = not flow.spec_problems(util.read_spec(root))
@@ -153,16 +158,25 @@ def import_design(root, path=None, screens=None):
     if any(s.get("state") for s in m["screens"]) and not m.get("confirmed"):
         warn += ("\n! 프로토타입 한 파일 안의 상태 분기를 화면 후보로 뽑았다 — **사용자에게 목록을 보이고 확정받은 뒤** "
                  "import_design(screens=[{id,title,file,anchor}...]) 로 다시 부른다 (design/handoff.manifest.json 에 남는다).")
+    if overlays and not m.get("components_confirmed"):
+        warn += ("\n! 오버레이 " + ", ".join(f"{c['id']}({c['type']})" for c in overlays)
+                 + " 는 화면이 아니라 **컴포넌트**로 잡았다 — 사용자에게 보이고, 이름·타입을 고치거나 화면으로 승격하려면 "
+                   "import_design(components=[{id,type,title,anchor}...]) 또는 screens=… 로 다시 부른다. 그대로면 확정 없이도 매니페스트에 든다.")
     hints = design.readme_hints(root, m)
+    ctypes = " · ".join(f"{t} {n}" for t, n in sorted(dv["components"].items())) or "없음"
     return {"ok": True, "source": src, "confirmed": m.get("confirmed", False), "derived": dv,
             "screens": [{"id": s["id"], "title": s["title"], "file": s["file"], "anchor": s.get("anchor")} for s in m["screens"]],
+            "components": [{k: c.get(k) for k in ("id", "type", "title", "screen", "anchor", "handler") if c.get(k) is not None}
+                           for c in comps],
+            "navigation": {k: v for k, v in (detail.get("navigation") or {}).items() if k != "transitions"},
             "boards": m.get("boards", []), "tokens": len(m["tokens"]), "docs": m["docs"], "chats": m.get("chats", []),
             "assets": len(m["assets"]), "hints": hints,
             "dashboard": _render(root, cfg, st),
-            "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 토큰 {len(m['tokens'])}개 · 문서 {len(m['docs'])}개 · "
-                        f"파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · 모델 {', '.join(dv['entities']) or '없음'} · "
-                        f"핸들러 {dv['handlers']} · 의도 {dv['intent_turns']}턴 (design/, 지문 {st['fingerprint']}).{warn}\n"
-                        "화면 목록을 사용자에게 보이고 빠진 화면이 없는지 확인받는다.\n"
+            "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 컴포넌트 {len(comps)}개 ({ctypes}) · 토큰 {len(m['tokens'])}개 · "
+                        f"문서 {len(m['docs'])}개 · 파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · "
+                        f"모델 {', '.join(dv['entities']) or '없음'} · 핸들러 {dv['handlers']} · "
+                        f"전이 {dv['navigation']['transitions']} · 의도 {dv['intent_turns']}턴 (design/, 지문 {st['fingerprint']}).{warn}\n"
+                        "화면 목록과 컴포넌트(타입) 목록을 사용자에게 보이고 빠진 것이 없는지 확인받는다.\n"
                         + (f"README 의 스택 힌트 (기본값 제안 — 사람이 확정):\n  " + "\n  ".join(hints) + "\n" if hints else "")
                         + f"다음: {st['next']}")}
 

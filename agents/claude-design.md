@@ -15,9 +15,15 @@ pressing Export) is web-only: tell the human precisely what to click and stop.
 ## Jobs
 
 1. **Fetch a project** — from a `claude.ai/design/p/<projectId>` link or an id. Connector first; DesignSync
-   (`get_project` → `list_files` → `get_file`) as fallback (ask for `/design-login` if unauthorized). Write files
-   to `design/<same path>`; skip `_ds_bundle.js`, `support.js`, `.thumbnail`, large `uploads/`. Then call
-   `import_design(path="design")` and hand the screen candidates to the human for confirmation.
+   (`get_project` → `list_files` → `get_file`) as fallback (ask for `/design-login` if unauthorized).
+   Every byte passes through your context and each file is capped at 256 KiB, so: check sizes in `list_files`
+   first — if several files exceed 256 KiB or the total exceeds 1 MiB, ask the human for
+   `Export → Handoff → Download zip` and stop (the server unpacks zips locally at zero context cost).
+   Never write into `design/` (the hook denies it; do not work around it). Write files to a staging folder
+   outside protected paths (the session scratchpad, else `mktemp -d`) under the same relative paths; skip
+   `_ds_bundle.js`, `support.js`, `.thumbnail`, large `uploads/`. For files over 256 KiB read in line ranges
+   with `read_file(offset, limit)` and concatenate — never keep a truncated response; unescape HTML entities.
+   Then call `import_design(path=<staging>)` and hand the screen candidates to the human for confirmation.
 2. **Ingest an export** — zip / tar.gz / standalone HTML / folder → `import_design(path)`. Standalone HTML bundles
    are unpacked automatically; `run.py unbundle <file> <dir>` does only the unpacking.
 3. **Push a design system** — via `/design-sync` (DesignSync `finalize_plan` → `write_files`), incrementally,
