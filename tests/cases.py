@@ -645,6 +645,36 @@ def test_report_and_state():
     check("status: 미배선", not tools.status(tempfile.mkdtemp())["ok"])
 
 
+def test_candidates():
+    base = tempfile.mkdtemp()
+    make_package(os.path.join(base, "my-export"))                      # README 에 스택 힌트만 — project/ 도 없다
+    with open(os.path.join(base, "my-export", "README.md"), "a") as f:
+        f.write("\nThis is a **handoff bundle** from Claude Design.\n")
+    os.makedirs(os.path.join(base, "unpacked", "project", "_ds"))      # zip 을 푼 모양
+    os.makedirs(os.path.join(base, "design"))                          # 도구 폴더 — 후보 아님
+    os.makedirs(os.path.join(base, "src"))                             # 평범한 폴더 — 후보 아님
+    with open(os.path.join(base, "src", "index.html"), "w") as f:
+        f.write("<html><body>hi</body></html>")
+    zp = os.path.join(base, "pkg.zip")
+    with zipfile.ZipFile(zp, "w") as z:
+        z.writestr("wrapper/README.md", "# x")
+    with open(os.path.join(base, "notes.txt"), "w") as f:
+        f.write("x")
+    r = tools.status(base)
+    paths = [c["path"] for c in r["candidates"]]
+    check("candidates: 미배선에서도 찾는다", paths == ["my-export/", "unpacked/", "pkg.zip"], paths)
+    check("candidates: 메시지에 든다", "패키지 후보" in r["message"] and "고르게" in r["message"], r["message"])
+    tools.setup(base)
+    r = tools.status(base)
+    check("candidates: import 단계", r["phase"] == "import" and [c["path"] for c in r["candidates"]] == paths, r)
+    for n in ("unpacked", "pkg.zip"):
+        shutil.rmtree(os.path.join(base, n), ignore_errors=True) if os.path.isdir(os.path.join(base, n)) else os.remove(os.path.join(base, n))
+    r = tools.status(base)
+    check("candidates: 하나면 바로 제안", 'import_design(path="my-export")' in r["message"], r["message"])
+    tools.import_design(base, "my-export")
+    check("candidates: 등록 뒤엔 안 보인다", "candidates" not in tools.status(base), tools.status(base).get("candidates"))
+
+
 def test_screens_page():
     root = to_locked(make_repo())
     tools.build(root)
@@ -703,7 +733,7 @@ def test_hooks():
     check("hook: 미배선 레포는 통과", r.stdout.strip() == "")
 
 
-TESTS = [test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_generation, test_happy_cycle,
+TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_generation, test_happy_cycle,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks]
 

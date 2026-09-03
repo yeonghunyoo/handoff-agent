@@ -30,7 +30,7 @@ def idx(p):
 def next_action(st):
     p = st["phase"]
     if p == "import":
-        return "import_design(path) — Claude Design 에서 내보낸 zip/폴더 경로를 넘긴다"
+        return "import_design(path) — Claude Design 에서 내보낸 zip/폴더 경로를 넘긴다 (레포 루트에 두면 status.candidates 가 찾는다)"
     if p == "spec":
         return "spec_save(spec) — platforms · stack.backend · infra(db/auth/hosting/env) 를 사람에게 묻고 저장한다"
     if p == "api":

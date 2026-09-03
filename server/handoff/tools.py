@@ -67,8 +67,10 @@ def _pending(root, action, prompt):
 
 def status(root):
     if not util.is_wired(root):
-        return {"ok": False, "wired": False,
-                "message": "이 레포는 아직 배선되지 않았다. 여기서 쓰려면 setup 을 부른다 (config · .gitignore · CLAUDE.md 절)."}
+        cands = design.find_candidates(root)
+        return {"ok": False, "wired": False, "candidates": cands,
+                "message": "이 레포는 아직 배선되지 않았다. 여기서 쓰려면 setup 을 부른다 (config · .gitignore · CLAUDE.md 절)."
+                           + _cand_note(cands)}
     cfg, st = _st(root)
     steps = [{"phase": p, "label": flow.LABELS[p], "current": p == st["phase"],
               "passed": flow.idx(p) < flow.idx(st["phase"])} for p in flow.PHASES]
@@ -87,7 +89,21 @@ def status(root):
     if st["manifest"]:
         m = st["manifest"]
         out["design"] = {"screens": [s["id"] for s in m["screens"]], "tokens": len(m["tokens"]), "docs": m["docs"]}
+    if st["phase"] == "import":
+        out["candidates"] = design.find_candidates(root)
+        out["message"] += _cand_note(out["candidates"])
     return out
+
+
+def _cand_note(cands):
+    """status 메시지 꼬리 — 레포 루트에서 찾은 패키지 후보. 사용자가 경로를 말하지 않아도 되게 한다."""
+    if not cands:
+        return ""
+    rows = "\n  ".join(f'{c["path"]}  ({c["why"]})' for c in cands)
+    if len(cands) == 1:
+        return (f"\n레포 루트에서 패키지 후보를 찾았다:\n  {rows}\n"
+                f"사용자에게 이것으로 등록할지 확인한 뒤 import_design(path=\"{cands[0]['path'].rstrip('/')}\") 를 부른다.")
+    return f"\n레포 루트에서 패키지 후보를 찾았다 — 사용자에게 고르게 한다:\n  {rows}"
 
 
 def setup(root):

@@ -12,6 +12,9 @@ MCP 서버 `handoff` 가 단계를 강제한다. 이 스킬이 하는 일은 둘
 
 `status` 를 부른다. `next` 가 다음 걸음, `warnings` 는 단계와 무관하게 먼저 처리한다.
 미배선이면 `setup` 을 부른다 (config · .gitignore · CLAUDE.md 절 — 세션 재시작 불필요).
+`status.candidates` 는 서버가 레포 루트에서 찾은 패키지 후보(내보낸 zip/tar · standalone HTML · 핸드오프 번들 폴더)다.
+사용자가 경로를 말하지 않았으면 이 목록을 보이고 — 하나면 그것으로 등록할지, 여럿이면 어느 것인지 — 확인받은 뒤
+`import_design(path)` 를 부른다. 경로를 되묻지 않는다.
 도구가 안 보이면: 플러그인이 enabled 인지 `claude plugin list` 로 보고, 방금 깔았다면 세션 재시작을 안내한다.
 CLI 폴백: `python3 <플러그인 루트>/server/run.py status --root .`
 
@@ -32,7 +35,7 @@ CLI 폴백: `python3 <플러그인 루트>/server/run.py status --root .`
 
 | 단계 | 하는 일 |
 |---|---|
-| ① import | 입력 셋 중 하나를 받는다 — **(a) 내보낸 파일 — 기본** (`Export → Handoff → Download zip` 의 zip/tar.gz, 또는 `standalone HTML` 한 파일 — 번들을 자동으로 펼친다): `import_design(path)`. 서버가 로컬에서 풀므로 컨텍스트를 안 쓰고, README·`chats/` 도 zip 에만 들어 있다. **(b) claude.ai/design 프로젝트 링크** (`…/design/p/<projectId>…`): 아래 "링크로 받기" 절차 — 파일마다 모델 컨텍스트를 두 번(읽기·쓰기) 지나므로 작은 프로젝트에만 쓰고, 큰 파일이 있으면 (a) 를 권한다. **(c) 폴더**. 응답의 **화면 후보와 컴포넌트 목록을 사용자에게 보여 확정받는다** — 프로토타입은 아트보드 한 파일 안에 화면 여럿(`isHome`·`isStats`… 상태 분기)이 들어 있다. 시트·모달·팝오버(재생 중·설정·믹서)는 **화면이 아니라 컴포넌트**(`type: sheet|modal|popover`)로 잡히고, 버튼·탭·토글·인풋·슬라이더·반복 항목·제스처도 타입별로 분류된다. 사용자가 화면을 추가·삭제·개명하면 `import_design(screens=[{id,title,file,anchor}])`, 컴포넌트의 이름·타입을 고치면 `import_design(components=[{id,type,title,anchor}])` 로 다시 부른다 (한쪽만 줘도 다른 쪽은 유지). 확정되면 `design/handoff.manifest.json` 에 화면·컴포넌트·내비게이션·state·모델·문구·아이콘·토큰 상세가 실린다. 탐색 보드(여러 안 비교)는 화면이 아니라 참고 자료로 분리된다. 패키지가 아직 없으면 claude.ai/design 에서 디자인을 마치라고 안내하고 멈춘다 — 디자인 루프는 거기서 돈다 |
+| ① import | 사용자가 경로·링크를 안 줬으면 `status.candidates` 부터 (위 "항상 먼저"). 입력 셋 중 하나를 받는다 — **(a) 내보낸 파일 — 기본** (`Export → Handoff → Download zip` 의 zip/tar.gz, 또는 `standalone HTML` 한 파일 — 번들을 자동으로 펼친다): `import_design(path)`. 서버가 로컬에서 풀므로 컨텍스트를 안 쓰고, README·`chats/` 도 zip 에만 들어 있다. **(b) claude.ai/design 프로젝트 링크** (`…/design/p/<projectId>…`): 아래 "링크로 받기" 절차 — 파일마다 모델 컨텍스트를 두 번(읽기·쓰기) 지나므로 작은 프로젝트에만 쓰고, 큰 파일이 있으면 (a) 를 권한다. **(c) 폴더**. 응답의 **화면 후보와 컴포넌트 목록을 사용자에게 보여 확정받는다** — 프로토타입은 아트보드 한 파일 안에 화면 여럿(`isHome`·`isStats`… 상태 분기)이 들어 있다. 시트·모달·팝오버(재생 중·설정·믹서)는 **화면이 아니라 컴포넌트**(`type: sheet|modal|popover`)로 잡히고, 버튼·탭·토글·인풋·슬라이더·반복 항목·제스처도 타입별로 분류된다. 사용자가 화면을 추가·삭제·개명하면 `import_design(screens=[{id,title,file,anchor}])`, 컴포넌트의 이름·타입을 고치면 `import_design(components=[{id,type,title,anchor}])` 로 다시 부른다 (한쪽만 줘도 다른 쪽은 유지). 확정되면 `design/handoff.manifest.json` 에 화면·컴포넌트·내비게이션·state·모델·문구·아이콘·토큰 상세가 실린다. 탐색 보드(여러 안 비교)는 화면이 아니라 참고 자료로 분리된다. 패키지가 아직 없으면 claude.ai/design 에서 디자인을 마치라고 안내하고 멈춘다 — 디자인 루프는 거기서 돈다 |
 | ② spec | `status.hints`(README 의 스택 힌트)를 기본값 제안으로 보이되 **사람이 고른다**: `platforms`(ios/android), `stack.backend`(후보 2~3개 비교), `infra.db · auth · hosting`(결정만 기록 — 스캐폴딩은 구현 에이전트 몫), `infra.env_vars`. 한 번에 한 항목씩 묻고 답마다 `spec_save` 로 누적한다. 선택: `stack.ios_project`(xcodegen-spm · xcode-sync · xcode-classic · existing) · `stack.android_project`(gradle-modular · gradle-single · existing) — 기본 existing |
 | ③ api | **design/ 의 화면 HTML 과 문서를 직접 읽고** 각 화면이 필요로 하는 데이터·동작으로부터 `openapi.yaml` 을 초안해 `api_submit(openapi)`. operationId 를 lowerCamel 로 붙인다 (앱이 부르는 `ApiRoutes.<operationId>` 가 된다). 자리표시 외 시크릿 금지 |
 | ④ review | 대시보드(`docs/handoff-dashboard.html`)를 **아티팩트로 발행해 보이고** `review` 를 부른다 — 승인은 elicitation 으로 사람이 한다. 반려면 사유대로 고친다 (`api_submit` · `spec_save` · `import_design` · `back`) 뒤 다시 `review` |

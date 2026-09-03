@@ -46,6 +46,66 @@ class DesignError(ValueError):
 
 # ─────────────────────────── 가져오기 ───────────────────────────
 
+_CAND_SKIP = {"design", "api", "shared", "docs", "node_modules", "build", "dist", "Pods", "DerivedData", "__MACOSX"}
+_CAND_ARCHIVE = (".zip", ".tar.gz", ".tgz", ".tar")
+
+
+def find_candidates(root, limit=8):
+    """레포 루트에서 핸드오프 패키지 후보를 찾는다 — 사용자가 경로를 말하지 않아도 status 가 제안한다.
+
+    후보: 내보낸 zip/tar · standalone HTML(번들) · 핸드오프 번들 폴더(README 에 'handoff bundle' · project/ · _ds/ · *.dc.html).
+    design/ 자체와 도구·빌드 산출물은 뺀다. 순서: 폴더 → 번들 html → 아카이브, 각각 이름순."""
+    out = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for n in names:
+        if n.startswith(".") or n in _CAND_SKIP:
+            continue
+        fp = os.path.join(root, n)
+        if os.path.isdir(fp):
+            why = _folder_candidate(fp)
+            if why:
+                out.append({"path": n + "/", "kind": "folder", "why": why})
+        elif n.lower().endswith(_CAND_ARCHIVE) and (zipfile.is_zipfile(fp) or tarfile.is_tarfile(fp)):
+            out.append({"path": n, "kind": "archive", "why": "내보낸 zip/tar"})
+        elif n.lower().endswith(HTML_EXT) and is_bundled_html(fp):
+            out.append({"path": n, "kind": "bundle", "why": "standalone HTML 번들"})
+    order = {"folder": 0, "bundle": 1, "archive": 2}
+    out.sort(key=lambda c: (order[c["kind"]], c["path"]))
+    return out[:limit]
+
+
+def _folder_candidate(d):
+    """핸드오프 번들 폴더인 근거 문장, 아니면 ''. 두 단계 깊이까지만 본다 (zip 을 풀면 <이름>/project/ 가 흔하다)."""
+    try:
+        top = set(os.listdir(d))
+    except OSError:
+        return ""
+    if ".git" in top and os.path.isdir(os.path.join(d, ".git")):
+        return ""                                       # 다른 레포(워크트리·서브모듈)는 후보가 아니다
+    for rd in ("README.md", "readme.md"):
+        if rd in top:
+            head = util.read_text(os.path.join(d, rd))[:2000].lower()
+            if "handoff bundle" in head or "coding agents: read this first" in head:
+                return "Claude Design 핸드오프 번들 (README)"
+    if "project" in top and os.path.isdir(os.path.join(d, "project")):
+        return "핸드오프 번들 구조 (project/)"
+    if "_ds" in top and os.path.isdir(os.path.join(d, "_ds")):
+        return "디자인 시스템 폴더 (_ds/)"
+    for base, dirs, files in os.walk(d):
+        if os.path.relpath(base, d).count(os.sep) >= 1:
+            dirs[:] = []
+        dirs[:] = [x for x in dirs if not x.startswith(".") and x not in SKIP_DIRS]
+        for f in files:
+            if f.endswith(".dc.html"):
+                return "아트보드 (*.dc.html)"
+            if f.lower().endswith(HTML_EXT) and is_bundled_html(os.path.join(base, f)):
+                return "standalone HTML 번들"
+    return ""
+
+
 def import_package(root, src):
     """zip 또는 디렉토리를 design/ 로 옮긴다 (기존 design/ 은 교체). 반환: 원본 이름. 상대 경로는 레포 기준."""
     src = os.path.expanduser(src)
