@@ -2,11 +2,12 @@
 
   docs/handoff-plan.md          계약 요약 (화면 · 토큰 · 라우트 · 스펙)
   docs/handoff-verify.md        검사 결과
-  docs/handoff-dashboard.html   사람이 보는 정본 (아티팩트로 발행)
   docs/handoff-screens/         디자인 원본 | iOS | Android 나란히 (스크린샷이 있을 때)
+  summary(...)                  채팅에 보이는 요약 표 (md) — 디자인 출처 · 계약 · 선택한 인프라. 사람 판단 지점(④·⑦) 앞에 보인다
+  checklist(...)                구현 뒤 투두식 정합성 체크리스트 (md) — 항목별 [x]/[ ] + 분석. ⑥·⑦ 에 보인다
+대시보드 HTML 은 없다 — 사람은 채팅 표와 docs/ 의 md 만 본다.
 에이전트가 읽는 것(착수 프롬프트·리포트 응답)은 영어 명령문이다 — 산문을 넣지 않는다.
 """
-import base64
 import html
 import json
 import os
@@ -316,183 +317,124 @@ def screens_page(root, st, roles):
     return os.path.join(util.DOCS_DIR, SCREENS_DIR, "index.html")
 
 
-# ─────────────────────────── 대시보드 ───────────────────────────
+# ─────────────────────────── 채팅 요약 표 · 체크리스트 (md) ───────────────────────────
 
-_CSS = """
-:root{--bg:#fafaf8;--fg:#222;--mut:#666;--line:#ddd;--card:#fff;--ok:#2a7;--bad:#c33;--warn:#c80;--acc:#2563eb}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#151515;--fg:#eee;--mut:#999;--line:#333;--card:#1e1e1e}}
-:root[data-theme="dark"]{--bg:#151515;--fg:#eee;--mut:#999;--line:#333;--card:#1e1e1e}
-body{background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif;margin:0;padding:1.5rem;max-width:1100px}
-h1{font-size:1.4rem;margin:0 0 .25rem}h2{font-size:1.1rem;margin:2rem 0 .5rem;border-bottom:1px solid var(--line)}
-.meta{color:var(--mut)}.phases{display:flex;flex-wrap:wrap;gap:.35rem;margin:1rem 0}
-.ph{padding:.2rem .6rem;border:1px solid var(--line);border-radius:999px;color:var(--mut)}
-.ph.cur{background:var(--acc);color:#fff;border-color:var(--acc)}.ph.done{color:var(--fg)}
-.warn{background:rgba(200,128,0,.12);border-left:3px solid var(--warn);padding:.5rem .8rem;margin:.4rem 0}
-.bad{color:var(--bad)}.ok{color:var(--ok)}table{border-collapse:collapse;width:100%;margin:.5rem 0}
-td,th{border-bottom:1px solid var(--line);padding:.3rem .5rem;text-align:left;vertical-align:top}
-code{background:rgba(127,127,127,.15);padding:0 .25rem;border-radius:3px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.8rem}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:.6rem}
-.card img{width:100%;border-radius:4px;border:1px solid var(--line)}.card .t{font-weight:600}.card .s{color:var(--mut);font-size:.85em}
-.score{font-size:2rem;font-weight:700}.badge{display:inline-block;padding:.1rem .5rem;border-radius:4px;color:#fff}
-.badge.pass{background:var(--ok)}.badge.loop{background:var(--bad)}details{margin:.4rem 0}summary{cursor:pointer}
-.sw{display:inline-block;width:.9em;height:.9em;border:1px solid var(--line);vertical-align:middle;margin-right:.3rem}
-pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--line);padding:.6rem;border-radius:6px}
-"""
+def _md_table(rows, head=("항목", "값")):
+    esc = lambda v: str(v).replace("|", "\\|").replace("\n", " ")
+    return "\n".join([f"| {head[0]} | {head[1]} |", "|---|---|"] + [f"| {esc(k)} | {esc(v)} |" for k, v in rows])
 
 
-def _img_data(path, budget):
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        return None, budget
-    if size > budget or size > 600_000:
-        return None, budget
-    ext = os.path.splitext(path)[1].lower().lstrip(".")
-    mime = {"jpg": "jpeg"}.get(ext, ext)
-    with open(path, "rb") as f:
-        return f"data:image/{mime};base64,{base64.b64encode(f.read()).decode()}", budget - size
+def _domains(urls):
+    return ", ".join(sorted({u.split("//")[-1].split("/")[0] for u in (urls or []) if isinstance(u, str)}))
 
 
-def dashboard(root, cfg, st, routes=None, result=None, handoff=None):
+def summary(root, st, routes=None):
+    """사람이 확인하는 요약 — 디자인 출처(리소스 id · url) · 계약 · 플랫폼·스택 · 선택한 인프라. 스킬이 채팅에 표로 그대로 보인다."""
     m = st.get("manifest") or {}
     spec = util.read_spec(root) or {}
-    P = [f"<title>handoff — {_esc(os.path.basename(root))}</title><style>{_CSS}</style>",
-         f"<h1>{_esc(os.path.basename(root))} — {_esc(st['label'])}</h1>",
-         f"<div class=meta>계약 v{st['version']} · 지문 <b>[{st['fingerprint']}]</b> · 사이클 {st['cycle']} · {util.now()}</div>",
-         "<div class=phases>" + "".join(
-             f'<span class="ph {"cur" if p == st["phase"] else ("done" if flow.idx(p) < flow.idx(st["phase"]) else "")}">'
-             f'{_esc(flow.LABELS[p])}</span>' for p in flow.PHASES) + "</div>"]
-    if st["human"]:
-        P.append(f"<div class=warn>✋ 사람 판단 지점 — {_esc(st['next'])}</div>")
-    for w in st["warnings"]:
-        P.append(f"<div class=warn>{_esc(w)}</div>")
-
-    # 화면
-    P.append(f"<h2>화면 — {len(m.get('screens', []))}개 (design/)</h2><div class=grid>")
-    budget = 6_000_000
-    for s in m.get("screens", []):
-        img = None
-        for shot in s.get("shots") or []:
-            img, budget = _img_data(os.path.join(util.design_dir(root), shot), budget)
-            if img:
-                break
-        P.append("<div class=card>" + (f'<img src="{img}" alt="">' if img else "")
-                 + f'<div class=t>{_esc(s["title"])}</div><div class=s><code>Screens.{_esc(s["id"])}</code>'
-                 + (f' · design/{_esc(s["file"])}' if s.get("file") else "") + "</div></div>")
-    P.append("</div>")
-    if m.get("docs"):
-        P.append("<p class=meta>문서: " + ", ".join(f"<code>design/{_esc(d)}</code>" for d in m["docs"]) + "</p>")
-
-    # 컴포넌트 (타입별)
+    infra = spec.get("infra") or {}
+    stack = spec.get("stack") or {}
+    src = st.get("design_source") or {}
+    rows = []
+    if src.get("url"):
+        rows.append(("Claude Design 프로젝트", src["url"]))
+    if src.get("project_id"):
+        rows.append(("프로젝트 id", src["project_id"]))
+    if src.get("path"):
+        rows.append(("패키지", src["path"]))
+    screens = m.get("screens") or []
+    if screens:
+        rows.append(("화면", f"{len(screens)}개 — " + ", ".join(f"{s['id']}" + (f" ({s['file']})" if s.get("file") else "") for s in screens)))
     comps = _components_of(root, m)
-    P.append(f"<h2>컴포넌트 — {len(comps)}개" + (" (사람 확정)" if m.get("components_confirmed") else " (서버 추출)") + "</h2>")
     if comps:
-        P.append("<details open><summary>" + " · ".join(f"{t} {sum(1 for c in comps if c.get('type') == t)}" for t in derive.COMPONENT_TYPES
-                                                       if any(c.get("type") == t for c in comps))
-                 + "</summary><table><tr><th>타입</th><th>id</th><th>제목</th><th>화면</th><th>핸들러 / 열기·닫기</th></tr>")
-        for typ in derive.COMPONENT_TYPES:
-            for c in (x for x in comps if x.get("type") == typ):
-                h = ", ".join(c.get("open") or []) + (" / " + ", ".join(c["close"]) if c.get("close") else "") \
-                    if typ in ("sheet", "modal", "popover") else (c.get("handler") or "")
-                P.append(f"<tr><td>{_esc(typ)}</td><td><code>{_esc(c['id'])}</code></td><td>{_esc(c.get('title') or '')}</td>"
-                         f"<td>{_esc(c.get('screen') or 'shared')}</td><td><code>{_esc(h)}</code></td></tr>")
-        P.append("</table></details>")
-
-    # 토큰
-    toks = m.get("tokens") or {}
-    P.append(f"<h2>토큰 — {len(toks)}개</h2>")
-    if toks:
-        P.append("<details><summary>펼치기</summary><table><tr><th>키</th><th>종류</th><th>값</th></tr>")
-        for k, v in sorted(toks.items()):
-            sw = (f'<span class=sw style="background:{_esc(v["value"])}"></span>'
-                  if v["kind"] == "color" and str(v["value"]).startswith("#") else "")
-            P.append(f"<tr><td><code>{_esc(k)}</code></td><td>{v['kind']}</td><td>{sw}<code>{_esc(v['value'])}</code></td></tr>")
-        P.append("</table></details>")
-    else:
-        P.append("<p class=meta>토큰이 없다 — 색·치수 하드코딩 검출이 비활성이다.</p>")
-
-    # API
-    routes = routes or []
-    P.append(f"<h2>API — {len(routes)}개 (api/openapi.yaml)</h2>")
-    if routes:
-        P.append("<table><tr><th>메서드</th><th>경로</th><th>요약</th><th>상수</th></tr>")
-        for r in routes:
-            P.append(f"<tr><td>{r['method']}</td><td><code>{_esc(r['path'])}</code></td><td>{_esc(r['summary'])}</td>"
-                     f"<td><code>ApiRoutes.{_esc(r['name'])}</code></td></tr>")
-        P.append("</table>")
-    else:
-        P.append("<p class=meta>아직 없다.</p>")
-
-    # 스펙
-    P.append("<h2>스펙 · 인프라 (사람이 결정)</h2><ul>")
-    P.append(f"<li>플랫폼: {_esc(', '.join(spec.get('platforms') or []) or '-')}</li>")
-    for k, v in (spec.get("stack") or {}).items():
-        P.append(f"<li>스택 {_esc(k)}: {_esc(v)}</li>")
-    pricing = None
-    for k, v in (spec.get("infra") or {}).items():
-        if k == "pricing":
-            pricing = v
-            continue
-        P.append(f"<li>인프라 {_esc(k)}: {_esc(json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v)}</li>")
+        rows.append(("컴포넌트", f"{len(comps)}개" + (" (사람 확정)" if m.get("components_confirmed") else "")))
+    rows.append(("계약", f"v{st.get('version', 0)} · 지문 [{st.get('fingerprint')}] · API {len(routes or [])}개"))
+    rows.append(("플랫폼", ", ".join(spec.get("platforms") or []) or "-"))
+    rows.append(("백엔드 스택", stack.get("backend") or "-"))
+    for k in ("ios_project", "android_project"):
+        if stack.get(k):
+            rows.append((f"{k.split('_')[0]} 프로젝트", stack[k]))
+    sc = infra_mod.scale(infra.get("scale"))
+    if sc:
+        rows.append(("규모", f"{sc['label']} (MAU {infra.get('mau') or sc['mau']} · DAU {infra.get('dau') or sc['dau']})"))
+    c = infra_mod.combo(infra.get("combo"))
+    if c:
+        rows.append(("인프라 조합", f"{c['label']} (`{c['id']}`)"))
+    for k, lab in (("db", "DB"), ("auth", "인증"), ("hosting", "호스팅")):
+        if infra.get(k):
+            rows.append((lab, infra[k]))
+    if infra.get("cost"):
+        basis = (f"확인 {infra['cost_checked']}" if infra.get("cost_checked")
+                 else f"내장 {infra.get('cost_basis') or infra_mod.COST_BASIS} 기준 · 미확인")
+        dom = _domains(infra.get("cost_sources"))
+        rows.append(("월 비용 (대략)", f"{infra['cost']} — {basis}" + (f" · {dom}" if dom else "")))
+    if infra.get("env_vars"):
+        rows.append(("환경 변수", ", ".join(map(str, infra["env_vars"]))))
+    if infra.get("notes"):
+        rows.append(("메모", infra["notes"]))
     if spec.get("divergences"):
-        P.append(f"<li>승인된 플랫폼 차이: {_esc(', '.join(map(str, spec['divergences'])))}</li>")
-    P.append("</ul>")
-    if isinstance(pricing, dict) and isinstance(pricing.get("combos"), dict):
-        P.append(f"<h3>요금 확인 {_esc(pricing.get('checked') or '?')} <span class=meta>{_esc(infra_mod.COST_UNIT)}</span></h3>")
-        P.append("<table><tr><th>조합</th><th>소규모</th><th>중규모 이상</th><th>출처</th></tr>")
-        for cid, row in pricing["combos"].items():
-            if not isinstance(row, dict):
-                continue
-            c = infra_mod.combo(cid)
-            links = " ".join(f'<a href="{_esc(u)}">{_esc(u.split("//")[-1].split("/")[0])}</a>' for u in (row.get("sources") or []))
-            P.append(f"<tr><td>{_esc(c['label'] if c else cid)}</td><td>{_esc(row.get('small', '-'))}</td>"
-                     f"<td>{_esc(row.get('medium_plus', '-'))}</td><td>{links}</td></tr>")
-        P.append("</table>")
+        rows.append(("승인된 iOS/Android 차이", ", ".join(map(str, spec["divergences"]))))
+    return {"rows": rows, "markdown": _md_table(rows)}
 
-    # 검사
-    if result:
-        c = result["components"]
-        P.append(f"<h2>검사 v{st['version']}</h2><div><span class=score>{result['score']}</span> / {result['threshold']} "
-                 f"<span class='badge {result['verdict']}'>{result['verdict']}</span></div>")
-        P.append(f"<p>소비 {c['consumption']} · 테스트 {c['tests'] if c['tests'] is not None else '못 잼'} · "
-                 f"파리티 {c['parity']} · 하드코딩 {c['hardcodes']} · 미승인 발산 {c['unapproved_divergences']} · "
-                 f"파리티 갭 {c['parity_gaps']}</p>")
-        if result["blockers"]:
-            P.append("<ul>" + "".join(f"<li class=bad>{_esc(b)}</li>" for b in result["blockers"]) + "</ul>")
-        for r, e in result["roles"].items():
-            cons = e["consumption"]
-            rep = e.get("report") or {}
-            P.append(f"<details open><summary><b>{r}</b> — {_esc(e['role_path'])}/ · 소비 {cons['used']}/{cons['total']} "
-                     f"({cons['rate']}%) · 리포트 {_esc(rep.get('status') or '없음')} · 테스트 {_esc(e['tests']['source'])}"
-                     f" · 작성 순서 {_esc(e['test_provenance']['verdict'])}</summary><ul>")
-            for i in [i for i in cons["items"] if not i["used"]][:30]:
-                P.append(f"<li class=bad>안 됨 {i['id']} <code>{_esc(i['const'] or i['label'])}</code></li>")
-            for h in e["hardcodes"][:30]:
-                P.append(f"<li>하드코딩 {h['kind']} <code>{_esc(h['file'])}:{h['line']}</code>"
-                         + (f" → <code>{_esc(h['token'])}</code>" if h.get("token") else "") + "</li>")
-            for s in e["bypass"]["skips"][:10]:
-                P.append(f"<li>테스트 skip <code>{_esc(s['file'])}</code> {_esc(s['text'])}</li>")
-            for d in e["bypass"]["deleted_tests"]:
-                P.append(f"<li class=bad>테스트 삭제 <code>{_esc(d)}</code></li>")
-            for d in e["unapproved_divergences"]:
-                P.append(f"<li>미승인 발산: {_esc(json.dumps(d, ensure_ascii=False))}</li>")
-            for x in rep.get("human_check") or []:
-                P.append(f"<li>사람 확인: {_esc(x)}</li>")
-            for p in rep.get("proposals") or []:
-                P.append(f"<li>계약 수정 제안: {_esc(p)}</li>")
-            for b in rep.get("blocked") or []:
-                P.append(f"<li class=bad>막힘: <pre>{_esc(json.dumps(b, ensure_ascii=False, indent=1)[:800])}</pre></li>")
-            P.append("</ul></details>")
-        if result["parity"]:
-            P.append("<h3>파리티 갭</h3><ul>" + "".join(
-                f"<li>{_esc(g['kind'])} {_esc(g['id'])} — {g['done']} 만 했다 (빠진 쪽 <b>{g['missing']}</b>)</li>"
-                for g in result["parity"]) + "</ul>")
-        page = os.path.join(root, util.DOCS_DIR, SCREENS_DIR, "index.html")
-        if os.path.isfile(page):
-            P.append(f"<p>화면 대조(사진): <code>{util.DOCS_DIR}/{SCREENS_DIR}/index.html</code> — 레포에서 연다 (아티팩트에 안 실린다)</p>")
-    if handoff and st["phase"] == "build":
-        P.append(f"<h2>인계 (v{handoff.get('version')} → 이번 루프)</h2><pre>"
-                 + _esc(json.dumps(handoff.get("roles"), ensure_ascii=False, indent=1)[:4000]) + "</pre>")
-    P.append("<p class=meta>이 문서는 서버가 렌더링한다 — 승인은 elicitation 또는 터미널에서만 받는다.</p>")
-    return _write(root, "handoff-dashboard.html", "\n".join(P))
+
+def checklist(result, version):
+    """구현 뒤 투두식 정합성 체크리스트 — 역할별 소비 항목 [x]/[ ] · 하드코딩 · 테스트 우회 · 파리티 갭 · 블로커 + 분석 문단.
+    스킬이 채팅에 그대로 보인다. 사실만 적는다 — 판단(승인)은 사람이 한다."""
+    c = result["components"]
+    items, L = [], [f"### 정합성 체크 v{version} — 점수 {result['score']}/{result['threshold']} → **{result['verdict']}**", ""]
+    for r, e in result["roles"].items():
+        cons = e["consumption"]
+        rep = e.get("report") or {}
+        L.append(f"**{r}** ({e['role_path']}/) — 소비 {cons['used']}/{cons['total']} · 리포트 {rep.get('status') or '없음'} · "
+                 f"테스트 {e['tests']['source']}" + (f" {e['tests']['score']:.0f}" if e["tests"]["score"] is not None else ""))
+        for i in cons["items"]:
+            items.append({"role": r, "id": i["id"], "label": i["const"] or i["label"], "done": bool(i["used"])})
+            L.append(f"- [{'x' if i['used'] else ' '}] {i['id']} `{i['const'] or i['label']}`")
+        for h in e["hardcodes"]:
+            L.append(f"- [ ] 하드코딩 {h['kind']} `{h['file']}:{h['line']}`" + (f" → `{h['token']}`" if h.get("token") else ""))
+            items.append({"role": r, "id": "HARD", "label": f"{h['file']}:{h['line']}", "done": False})
+        for sk in e["bypass"]["skips"]:
+            L.append(f"- [ ] 테스트 skip `{sk['file']}` — {sk['text'][:80]}")
+        for d in e["bypass"]["deleted_tests"]:
+            L.append(f"- [ ] 테스트 삭제 `{d}`")
+        for d in e["unapproved_divergences"]:
+            L.append(f"- [ ] 미승인 발산: {(d.get('topic') if isinstance(d, dict) else d)}")
+        for x in rep.get("human_check") or []:
+            L.append(f"- [ ] 사람 확인: {x}")
+        for b in e["blockers"]:
+            L.append(f"- [ ] 블로커: {b}")
+        L.append("")
+    if result["parity"]:
+        L.append("**파리티 (iOS ↔ Android)**")
+        for g in result["parity"]:
+            L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐")
+        L.append("")
+    # 분석 — 숫자에서 나오는 사실만
+    A = ["**분석**"]
+    A.append(f"- 소비 {c['consumption']} · 테스트 {c['tests'] if c['tests'] is not None else '못 잼'} · 파리티 {c['parity']} "
+             f"(가중 합 {result['score']}, 임계 {result['threshold']})")
+    undone = [i for i in items if not i["done"] and i["id"] != "HARD"]
+    if undone:
+        by = {}
+        for i in undone:
+            by.setdefault(i["role"], []).append(i["id"])
+        A.append("- 안 된 계약 항목: " + " · ".join(f"{r} {len(v)}개 ({', '.join(v[:6])}{'…' if len(v) > 6 else ''})" for r, v in by.items()))
+    if c["hardcodes"]:
+        A.append(f"- 하드코딩 {c['hardcodes']}건 — 토큰·상수로 바꾸면 소비 점수가 오른다")
+    if c["parity_gaps"] or c["unapproved_divergences"]:
+        A.append(f"- 파리티 갭 {c['parity_gaps']} · 미승인 발산 {c['unapproved_divergences']} — 한쪽만 구현했거나 승인 없이 달리 만든 것")
+    none_tests = [r for r, s_ in c["tests_source"].items() if s_ in ("none", "uncontracted")]
+    if none_tests:
+        A.append(f"- 테스트 증거 없음: {', '.join(none_tests)} ({'계약을 안 건드리는 스위트' if 'uncontracted' in c['tests_source'].values() else '리포트·서버 실행 둘 다 없음'})")
+    if result["blockers"]:
+        A.append("- 블로커 " + str(len(result["blockers"])) + "건 — 점수와 무관하게 pass 가 안 된다: " + "; ".join(result["blockers"][:5]))
+    props = [(r, p_) for r, e in result["roles"].items() for p_ in ((e.get("report") or {}).get("proposals") or [])]
+    if props:
+        A.append("- 계약 수정 제안: " + " · ".join(f"[{r}] {p_}" for r, p_ in props[:5]))
+    if result["verdict"] == "pass":
+        A.append("- 결론: 계약 항목이 소비됐고 블로커가 없다. 위 [ ] 항목은 승인과 함께 예외로 받아들이는 것이다")
+    else:
+        A.append("- 결론: loop — 위 [ ] 항목이 다음 착수 프롬프트에 인계된다")
+    L += A
+    return {"items": items, "verdict": result["verdict"], "score": result["score"], "threshold": result["threshold"],
+            "markdown": "\n".join(L)}

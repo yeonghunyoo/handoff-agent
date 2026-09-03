@@ -402,7 +402,8 @@ def test_derive():
     check("derive: 프롬프트 — rules.json (앱만)", "design/derived/rules.json" in p and "design/derived/rules.json" not in r["prompts"]["backend"], p[:1500])
     check("derive: 프롬프트 — 컴포넌트(타입) 목록 · 매니페스트", "## Components" in p and "tab      `setTabHome` — 홈 (in shared; handler setTabHome; → home)" in p
           and "design/handoff.manifest.json" in p and "button   `skipOnboarding` — 건너뛰기 버튼" in p, p)
-    check("derive: 대시보드 — 컴포넌트 표", "컴포넌트 — 5개 (사람 확정)" in open(os.path.join(root, "docs", "handoff-dashboard.html"), encoding="utf-8").read())
+    summ = tools.status(root)["summary"]["markdown"]
+    check("derive: 요약 표 — 컴포넌트 (사람 확정)", "| 컴포넌트 | 5개 (사람 확정) |" in summ and "| 화면 | 4개 — onboarding" in summ, summ)
     # 검사: 한글 리터럴 = raw-string, 미허용 폰트 = raw-font, 아이콘 소비
     t = wt(root, "ios")
     w(os.path.join(t, "apps/ios/Main.swift"), 'let a = Strings.Onboarding.geonneottwigi\nlet b = Text("건너뛰기")\nlet f = Font.custom("Inter", size: 12)\n'
@@ -481,6 +482,9 @@ def test_infra():
     s = tools.status(root)
     check("infra: status — 규모 전엔 후보 없이 규모부터 경고", s["infra_options"] and s["infra_options"]["scale"] is None
           and s["infra_options"]["combos"] == [] and any("규모부터" in w for w in s["warnings"]) and not any("요금이 아직" in w for w in s["warnings"]), s["warnings"])
+    tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg2")), url="https://claude.ai/design/p/abc123XYZ/files")
+    check("import: url → design_source", util.read_state(root)["design_source"]["project_id"] == "abc123XYZ"
+          and util.read_state(root)["design_source"]["url"].startswith("https://claude.ai/design/p/"), util.read_state(root)["design_source"])
     r = tools.spec_save(root, {"platforms": ["ios"], "stack": {"backend": "fastapi"}, "infra": {"mau": 50000, "dau": 4000}})
     check("infra: mau/dau → scale", r["draft"] and r["draft_spec"]["infra"]["scale"] == "medium_plus"
           and not any("infra.scale" in p for p in r["remaining"]) and r["infra_options"]["scale"] == "medium_plus", r)
@@ -524,9 +528,11 @@ def test_infra():
     r = tools.build(root)
     check("pricing: 착수 프롬프트에 확인일", "$0–25 (checked 2026-09-03)" in r["prompts"]["backend"], r["prompts"]["backend"][:1500])
     plan = open(os.path.join(root, "docs", "handoff-plan.md"), encoding="utf-8").read()
-    dash = open(os.path.join(root, "docs", "handoff-dashboard.html"), encoding="utf-8").read()
-    check("pricing: 문서에 요금표", "요금 확인 2026-09-03" in plan and "| Supabase + Fly.io | $0–25 | $75–350 |" in plan
-          and "요금 확인 2026-09-03" in dash and "supabase.com" in dash and '"pricing"' not in dash, plan[-600:])
+    summ = tools.status(root)["summary"]["markdown"]
+    check("pricing: 문서에 요금표", "요금 확인 2026-09-03" in plan and "| Supabase + Fly.io | $0–25 | $75–350 |" in plan, plan[-600:])
+    check("summary: 선택한 인프라만 — 요금표 전체는 없다", "| 인프라 조합 | Supabase + Fly.io (`supabase-fly`) |" in summ
+          and "| 월 비용 (대략) | $0–25 — 확인 2026-09-03 · fly.io, supabase.com |" in summ and "| 규모 | 소규모 (MAU 200 · DAU 20) |" in summ
+          and "railway" not in summ.lower() and "$75–350" not in summ, summ)
 
 
 def test_generation():
@@ -592,10 +598,15 @@ def test_happy_cycle():
     v = r["verify"]
     check("verify: 점수·성분", v["score"] >= 85 and v["components"]["hardcodes"] == 0 and v["components"]["parity_gaps"] == 0, v["components"])
     check("verify: 테스트 계약 접촉 → 자기신고 채택", v["components"]["tests_source"]["ios"] == "self-reported", v["components"])
-    check("verify: 문서·대시보드", os.path.isfile(os.path.join(root, v["doc"])) and os.path.isfile(os.path.join(root, v["dashboard"])))
-    html = open(os.path.join(root, v["dashboard"])).read()
-    check("dashboard: 지문·화면·라우트·점수", flow.current(root, util.load_config(root))["fingerprint"] in html
-          and "Screens.orderList" in html and "ApiRoutes.getOrders" in html and "badge pass" in html and "data:image/png" in html)
+    check("verify: 문서", os.path.isfile(os.path.join(root, v["doc"])) and not os.path.exists(os.path.join(root, "docs", "handoff-dashboard.html")))
+    cl = v["checklist"]
+    check("checklist: 투두 목록 + 분석", cl["verdict"] == "pass" and "- [x] " in cl["markdown"] and "ApiRoutes.getOrders" in cl["markdown"]
+          and "**backend**" in cl["markdown"] and "**분석**" in cl["markdown"] and "결론: 계약 항목이 소비됐고" in cl["markdown"]
+          and all(i["done"] for i in cl["items"] if i["id"].startswith("API-")), cl["markdown"][:800])
+    st0 = tools.status(root)
+    fp = flow.current(root, util.load_config(root))["fingerprint"]
+    check("status: ship 단계에 요약 표 + 체크리스트", st0["summary"] and fp in st0["summary"]["markdown"] and st0["checklist"]["verdict"] == "pass"
+          and "| 백엔드 스택 |" in st0["summary"]["markdown"], st0["summary"]["markdown"])
     st = flow.current(root, util.load_config(root))
     check("verify: pass → ship", st["phase"] == "ship")
     r = tools.ship(root, approver=None)

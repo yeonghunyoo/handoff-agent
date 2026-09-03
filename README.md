@@ -59,7 +59,7 @@
 | ① 패키지 등록 | 링크(`claude.ai/design/p/…`) · 내보낸 zip/tar.gz · standalone HTML(번들 자동 펼침) · 폴더를 `design/` 로 가져와 화면·컴포넌트(타입)·토큰·문서를 발견한다 | 레포 루트에 zip·번들 html·푼 폴더를 두면 `/handoff` 가 찾아서 제안한다 — 경로를 말할 필요가 없다. 다른 곳에 있으면 링크나 경로를 준다. **화면 목록을 확정한다** (프로토타입 한 파일 안의 상태 분기가 화면 후보). 시트·모달·팝오버는 화면이 아니라 **컴포넌트**로 잡히니 이름·타입만 보고 필요하면 고친다 |
 | ② 스펙 | 플랫폼 · 백엔드 스택 · 규모(예상 MAU·DAU → 소규모 / 중규모 이상) · 인프라(db/auth/hosting/env) **결정만 기록** | 규모를 먼저 정하면 그 규모에 맞는 인프라 조합 **4~5개**(그날 후보의 요금 페이지에서 새로 읽은 월 비용 구간 · 확인일 · 출처 · 장단점 · 종속성)를 보고 직접 고른다. 나머지 조합은 id 로 부를 수 있다 |
 | ③ 백엔드 계약 | 화면·문서에서 필요한 데이터로 `api/openapi.yaml` 초안 | — |
-| ④ 계약 확정 ✋ | 대시보드(화면 갤러리·토큰·라우트·결정)를 보인다 | 지문을 대조하고 승인/반려 |
+| ④ 계약 확정 ✋ | 요약 표(디자인 출처 · 화면 · 계약 지문 · 선택한 인프라)를 채팅에 보인다 | 지문을 대조하고 승인/반려 |
 | ⑤ 구현 | 역할별 워크트리 + 생성 상수(`ApiRoutes` `Screens` `DesignTokens`) + 착수 프롬프트로 병렬 구현 | 기다린다 |
 | ⑥ 검사 | 서버가 재검사해 점수 → `loop`(인계 후 재착수) 또는 `pass` | 계약 수정 제안이 있으면 판단 |
 | ⑦ 완료 승인 ✋ | 예외 항목(테스트 skip·하드코딩·플랫폼 차이)과 함께 보인다 | 승인 → main 머지 |
@@ -119,7 +119,7 @@
 | `strings.json` → `Strings.*` | 텍스트 노드(상태 분기·오버레이로 화면 귀속) + 데이터 문구 + 템플릿 조각. 키는 한글 로마자 (`onboarding.geonneottwigi`) | 앱 코드의 한글 리터럴 = `raw-string` 하드코딩 |
 | `icons.json` + `icons/*.svg` → `Icons.*` | 인라인 SVG 를 path 해시로 중복 제거, 이름은 근처 핸들러 (`setTabHome` → `tabHome`) | `ICN-xx` 소비 항목 · 파리티 |
 | `behavior.json` | 핸들러 → 바꾸는 state 키 · 탭 전이 · 타이머(ms) | 두 플랫폼이 같은 전이표를 구현 |
-| `components.json` | 클릭·입력·제스처 속성과 오버레이 스타일 블록 → 타입(`sheet` `modal` `popover` `tab` `button` `toggle` `input` `slider` `item` `gesture`) · 귀속 화면(상태 분기 + `renderVals` 의 탭 비교 플래그 + 오버레이 구역) | 매니페스트 `components` · 착수 프롬프트의 Components 절 · 대시보드 표 |
+| `components.json` | 클릭·입력·제스처 속성과 오버레이 스타일 블록 → 타입(`sheet` `modal` `popover` `tab` `button` `toggle` `input` `slider` `item` `gesture`) · 귀속 화면(상태 분기 + `renderVals` 의 탭 비교 플래그 + 오버레이 구역) | 매니페스트 `components` · 착수 프롬프트의 Components 절 |
 | `navigation.json` | 초기 state 의 `is*`=true 진입 화면 · `setTab` 전이 · 핸들러 본문의 state 리터럴(`tab: 'home'` · `settingsOpen: true`) | 매니페스트 `navigation` — 두 플랫폼이 같은 전이 그래프 |
 | `rules.json` | 디자인 시스템 `_adherence`(hex·px·폰트 금지) | `raw-font` 검출 등 검사 규칙이 디자인 시스템을 따라간다 |
 
@@ -141,10 +141,9 @@ Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이�
 
 | 산출물 | 위치 |
 |---|---|
-| 대시보드 (정본 — 아티팩트로 발행) | `docs/handoff-dashboard.html` |
+| 요약 표 · 정합성 체크리스트 (채팅) | `status` · `api_submit` · `verify` · `ship` 응답의 `summary.markdown` · `checklist.markdown` — 터미널은 `run.py status --root .` |
 | 계약 요약 · 검사 결과 (텍스트) | `docs/handoff-plan.md` · `docs/handoff-verify.md` |
 | 화면 대조 (디자인 원본 \| iOS \| Android) | `docs/handoff-screens/index.html` — 에이전트가 `<워크트리>/.handoff/shots/<화면id>.png` 를 남기면 |
-| 실시간 현황판 | `python3 <플러그인 루트>/server/run.py dashboard --root .` |
 
 승인 채널은 elicitation 과 터미널(`run.py review|ship --root .`) 둘뿐이다 — 에이전트가 승인을 위조할 수 없다.
 

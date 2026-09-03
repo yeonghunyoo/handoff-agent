@@ -6,7 +6,6 @@
   python3 run.py setup    --root <레포>
   python3 run.py review   --root <레포>    # 계약 확정 (tty 필수)
   python3 run.py ship     --root <레포>    # 완료 승인 (tty 필수)
-  python3 run.py dashboard --root <레포> [--port 8790]   # 로컬 실시간 현황판 (읽기 전용)
   python3 run.py unbundle <standalone.html> <폴더>       # Claude Design standalone HTML 내보내기를 파일들로 펼친다
 
 review · ship 은 elicitation 미지원 클라이언트의 폴백이다 — tty 에서만 받는다.
@@ -60,58 +59,12 @@ def tty_approver(message, items):
     return {"approved": False, "reason": input("반려/보류 사유: ").strip()}
 
 
-def serve_dashboard(root, port):
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    from handoff import tools, util
-
-    def token():
-        parts = []
-        for p in (util.ho(root, util.STATE), util.ho(root, tools.LAST), util.api_path(root)):
-            try:
-                s = os.stat(p)
-                parts.append(f"{s.st_mtime_ns}:{s.st_size}")
-            except OSError:
-                parts.append("-")
-        return "|".join(parts)
-
-    poll = ("<script>const v0=document.documentElement.dataset.v;setInterval(async()=>{try{const r=await fetch('/state');"
-            "const j=await r.json();if(j.v!==v0)location.reload();}catch(e){}},2000);</script>")
-
-    class H(BaseHTTPRequestHandler):
-        def log_message(self, *a):
-            pass
-
-        def do_GET(self):
-            if self.path == "/state":
-                body, ctype = json.dumps({"v": token()}), "application/json"
-            else:
-                cfg, st = tools._st(root)
-                tools._render(root, cfg, st)
-                html = util.read_text(os.path.join(root, util.DOCS_DIR, "handoff-dashboard.html"))
-                body = f'<!doctype html><html lang="ko" data-v="{token()}"><meta charset="utf-8">{html}{poll}</html>'
-                ctype = "text/html"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype + "; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(body.encode("utf-8"))
-
-    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
-    print(f"현황판: http://127.0.0.1:{port}  (읽기 전용 · Ctrl-C 로 종료)")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    return 0
-
-
 def main():
     ap = argparse.ArgumentParser(description="handoff MCP 서버 · 사람용 CLI")
     ap.add_argument("cmd", nargs="?", default="serve",
-                    choices=["serve", "status", "setup", "review", "ship", "dashboard", "unbundle"])
+                    choices=["serve", "status", "setup", "review", "ship", "unbundle"])
     ap.add_argument("args", nargs="*", help="unbundle: <standalone.html> <폴더>")
     ap.add_argument("--root", default=None)
-    ap.add_argument("--port", type=int, default=8790)
     args = ap.parse_args()
     root = os.path.abspath(args.root or os.environ.get("HANDOFF_ROOT") or os.getcwd())
 
@@ -139,8 +92,6 @@ def main():
         return 0
 
     from handoff import tools
-    if args.cmd == "dashboard":
-        return serve_dashboard(root, args.port)
     if args.cmd == "setup":
         out = tools.setup(root)
     elif args.cmd == "status":
@@ -150,6 +101,9 @@ def main():
                 print(("→" if s["current"] else "✓" if s["passed"] else "·"), s["label"])
             for w in out["warnings"]:
                 print("!", w)
+            for k in ("summary", "checklist"):
+                if out.get(k):
+                    print("\n" + out[k]["markdown"])
     elif args.cmd == "review":
         out = tools.review(root, approver=tty_approver)
     else:

@@ -28,7 +28,6 @@ server/.venv/bin/python3 tests/mcp_cases.py   # MCP 계층만 (elicitation 승�
 
 ```bash
 python3 server/run.py status|setup|review|ship --root <레포>
-python3 server/run.py dashboard --root <레포> [--port 8790]
 python3 server/run.py unbundle <standalone.html> <폴더>
 ```
 
@@ -56,6 +55,8 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 | precheck / verify | 워크트리 코드·diff | `score.evaluate_role` 결과 · loop 면 `.handoff/handoff.json` 인계 |
 | ship ✋ | 재검사 결과 | `git.merge` |
 
+사람이 보는 것은 `status`/`api_submit` 의 `summary`(디자인 출처 · 계약 · 선택한 인프라 표)와 `verify`/`status` 의 `checklist`(투두식 정합성 목록 + 분석)다 — 둘 다 `reports.py` 가 md 로 렌더링한다.
+
 `design.scan()` 은 매니페스트를 저장하지 않고 매번 `design/` 에서 결정적으로 다시 계산한다. 화면 목록을 바꾸는 유일한 방법은 `handoff.manifest.json` (사람 확정) 이다. 매니페스트의 상세(화면별 컴포넌트·문구·아이콘, 컴포넌트, 내비게이션, state, 모델·문구·아이콘·토큰 요약)는 `import_design` 마다 `design.write_manifest` 가 다시 채운다 — 사람이 정한 화면 목록과 (`components_confirmed` 일 때) 컴포넌트의 id·type·title 만 보존한다. 시각 같은 비결정 값은 넣지 않는다 (지문에 들기 때문). 오버레이(sheet·modal·popover)는 화면이 아니라 컴포넌트다 — 사람이 같은 anchor 를 `screens=` 로 올리면 화면이 이긴다.
 
 ### 하나를 바꾸면 같이 바뀌어야 하는 것
@@ -67,7 +68,7 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 
 ### 언어 규칙
 
-에이전트가 읽는 것(착수 프롬프트 · `reports.RULES` · `agents/*.md` · 리포트 응답)은 **영어 명령문**, 사람이 읽는 것(대시보드 · `docs/handoff-*` · 거부 메시지 · README · 스킬이 사용자에게 하는 말)은 **한국어**다. 사람용 문서는 손으로 쓰지 않고 `reports.py` 가 데이터에서 렌더링한다.
+에이전트가 읽는 것(착수 프롬프트 · `reports.RULES` · `agents/*.md` · 리포트 응답)은 **영어 명령문**, 사람이 읽는 것(채팅 요약 표 `reports.summary` · 체크리스트 `reports.checklist` · `docs/handoff-*` · 거부 메시지 · README · 스킬이 사용자에게 하는 말)은 **한국어**다. 대시보드 HTML 은 없다 — 사람 판단 지점 앞에 서버가 md 표를 주고 스킬이 채팅에 그대로 보인다. 사람용 문서는 손으로 쓰지 않고 `reports.py` 가 데이터에서 렌더링한다.
 
 ### 플러그인 배선
 

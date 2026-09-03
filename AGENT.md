@@ -43,7 +43,7 @@ ID(`W1` `C2` `S1`…)로 인용된다. 서버 거부 메시지는 같은 ID 를 
 ## 6. 에이전트에게는 영어 명령문, 사람에게는 한국어
 
 착수 프롬프트·리포트 응답·에이전트 정의는 영어 명령문이다. 산문·근거는 컨텍스트만 먹는다. 사람이 읽는
-것(대시보드·docs·README·거부 메시지)은 한국어다. 사람용 문서는 손으로 쓰지 않고 기계용 데이터에서 렌더링한다.
+것(채팅 요약 표·체크리스트·docs·README·거부 메시지)은 한국어다. 사람용 문서는 손으로 쓰지 않고 기계용 데이터에서 렌더링한다.
 
 ## 구성
 
@@ -57,7 +57,7 @@ ID(`W1` `C2` `S1`…)로 인용된다. 서버 거부 메시지는 같은 ID 를 
 | `server/handoff/score.py` | 판정 · 예외 항목 · 인계 |
 | `server/handoff/flow.py` | 단계 · 실측 대조 |
 | `server/handoff/infra.py` | 인프라 후보 카탈로그 (규모 · 조합 · 요금 페이지 출처) — 규모가 먼저다: 규모별 후보 `SHORTLIST` 4~5개만 표에 오르고, 요금은 스킬이 그 후보의 페이지만 매번 새로 읽어 `infra.pricing` 으로 저장, 내장 구간은 폴백. 고르는 것은 사람 |
-| `server/handoff/reports.py` | 착수 프롬프트 · md · 대시보드 · 화면 대조 |
+| `server/handoff/reports.py` | 착수 프롬프트 · md · 채팅 요약 표(summary) · 정합성 체크리스트(checklist) · 화면 대조 |
 | `server/handoff/tools.py` | 도구 (MCP 무관) |
 | `server/handoff/server.py` | MCP 계층 — `mcp` 를 import 하는 유일한 파일 |
 | `hooks/guard.py` | PreToolUse 경보 (stdlib) |

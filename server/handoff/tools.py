@@ -7,6 +7,7 @@ approver 가 None 이면 승인 프롬프트만 돌려준다(pending_human). 승
 """
 import concurrent.futures as futures
 import os
+import re
 import subprocess
 import sys
 
@@ -33,19 +34,31 @@ def _routes(root):
         return []
 
 
-def _render(root, cfg, st, result=None):
-    """대시보드 + 계약 요약. 실패해도 흐름을 막지 않되, 실패 사실은 돌려준다."""
+def _docs(root, cfg, st):
+    """docs/handoff-plan.md 갱신. 실패해도 흐름을 막지 않되, 실패 사실은 돌려준다."""
     try:
-        rs = _routes(root)
-        if result is None:
-            result = util.read_json(util.ho(root, LAST))
-        handoff = util.read_json(util.ho(root, util.HANDOFF))
-        dash = reports.dashboard(root, cfg, st, rs, result, handoff)
         if st["manifest"]:
-            reports.plan_doc(root, cfg, st, rs)
-        return dash
+            return reports.plan_doc(root, cfg, st, _routes(root))
+        return None
     except Exception as e:
-        return f"!! 대시보드 렌더링 실패: {type(e).__name__}: {e}"
+        return f"!! 문서 렌더링 실패: {type(e).__name__}: {e}"
+
+
+def _summary(root, st):
+    try:
+        return reports.summary(root, st, _routes(root))
+    except Exception as e:
+        return {"rows": [], "markdown": f"!! 요약 실패: {type(e).__name__}: {e}"}
+
+
+def _checklist(root, st, result=None):
+    result = result or util.read_json(util.ho(root, LAST))
+    if not result:
+        return None
+    try:
+        return reports.checklist(result, st["version"])
+    except Exception as e:
+        return {"items": [], "markdown": f"!! 체크리스트 실패: {type(e).__name__}: {e}"}
 
 
 def _save(root, st, ev, **fields):
@@ -90,10 +103,15 @@ def status(root):
             n = len(st["infra_options"]["services"])
             st["warnings"].append(f"인프라 요금이 아직 조회되지 않았다 (내장 폴백 {infra.COST_BASIS} 기준) — "
                                   f"infra_options.services 의 요금 페이지 {n}개만 읽어 infra.pricing 으로 저장한 뒤 표를 보인다")
+    if flow.idx(st["phase"]) >= flow.idx("review"):
+        st["summary"] = _summary(root, st)
+    if flow.idx(st["phase"]) >= flow.idx("build"):
+        st["checklist"] = _checklist(root, st)
     out = {"ok": True, "wired": True, "phase": st["phase"], "label": st["label"], "version": st["version"],
            "cycle": st["cycle"], "human": st["human"], "next": st["next"], "warnings": st["warnings"],
            "fingerprint": st["fingerprint"], "roles": st.get("roles"), "reports": st.get("reports"),
            "steps": steps, "hints": st.get("hints"), "infra_options": st.get("infra_options"),
+           "summary": st.get("summary"), "checklist": st.get("checklist"),
            "message": f"{st['label']} · 계약 v{st['version']} · 지문 [{st['fingerprint']}]\n다음: {st['next']}"}
     if st["manifest"]:
         m = st["manifest"]
@@ -151,7 +169,12 @@ MCP 도구 `status` 를 부르고 `next` 를 따른다.** 절차는 `/handoff` �
 
 # ─────────────────────────── ① 패키지 ───────────────────────────
 
-def import_design(root, path=None, screens=None, components=None):
+def _project_id(url):
+    m = re.search(r"/design/p/([A-Za-z0-9_-]+)", str(url or ""))
+    return m.group(1) if m else None
+
+
+def import_design(root, path=None, screens=None, components=None, url=None):
     cfg, st = _st(root)
     if flow.idx(st["phase"]) > flow.idx("review") and st["phase"] != "done":
         return _refuse(flow.require(st, "import", "spec", "api", "review", "done"))
@@ -174,6 +197,10 @@ def import_design(root, path=None, screens=None, components=None):
     spec_ok = not flow.spec_problems(util.read_spec(root))
     st["phase"] = "api" if spec_ok else "spec"
     st["roles"], st["reports"] = [], []
+    if path or url:
+        st["design_source"] = {"path": src if path else (st.get("design_source") or {}).get("path"),
+                               "url": url or (st.get("design_source") or {}).get("url"),
+                               "project_id": _project_id(url) or (st.get("design_source") or {}).get("project_id")}
     _save(root, st, "design_imported", source=src, hash=m["hash"][:12],
           screens=[s["id"] for s in m["screens"]], tokens=len(m["tokens"]))
     cfg, st = _st(root)
@@ -196,7 +223,7 @@ def import_design(root, path=None, screens=None, components=None):
             "navigation": {k: v for k, v in (detail.get("navigation") or {}).items() if k != "transitions"},
             "boards": m.get("boards", []), "tokens": len(m["tokens"]), "docs": m["docs"], "chats": m.get("chats", []),
             "assets": len(m["assets"]), "hints": hints,
-            "dashboard": _render(root, cfg, st),
+            "plan": _docs(root, cfg, st),
             "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 컴포넌트 {len(comps)}개 ({ctypes}) · 토큰 {len(m['tokens'])}개 · "
                         f"문서 {len(m['docs'])}개 · 파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · "
                         f"모델 {', '.join(dv['entities']) or '없음'} · 핸들러 {dv['handlers']} · "
@@ -264,10 +291,11 @@ def api_submit(root, openapi):
     st["phase"] = "review"
     _save(root, st, "api_submitted", routes=len(rs))
     cfg, st = _st(root)
-    dash = _render(root, cfg, st)
-    return {"ok": True, "routes": rs, "dashboard": dash,
+    _docs(root, cfg, st)
+    summ = _summary(root, st)
+    return {"ok": True, "routes": rs, "summary": summ,
             "message": (f"api/openapi.yaml 저장: 라우트 {len(rs)}개 (지문 {st['fingerprint']}).\n"
-                        f"대시보드를 아티팩트로 발행해 사용자에게 보이고 review 를 부른다: {dash}\n"
+                        "summary.markdown 표를 채팅에 그대로 보이고(고치지 않는다) review 를 부른다.\n"
                         f"다음: {st['next']}")}
 
 
@@ -278,7 +306,7 @@ def review_prompt(root, st):
     rs = _routes(root)
     spec = util.read_spec(root) or {}
     return (f"계약 확정 v{st['version'] + 1} — 지문 [{st['fingerprint']}]\n"
-            f"대시보드 헤더의 지문과 같은지 확인하십시오. 다르면 방금 본 것과 다른 계약입니다.\n"
+            f"방금 본 요약 표의 지문과 같은지 확인하십시오. 다르면 방금 본 것과 다른 계약입니다.\n"
             f"  · 화면 {len(m.get('screens', []))}개 · 토큰 {len(m.get('tokens', {}))}개 · 라우트 {len(rs)}개\n"
             f"  · 플랫폼 {', '.join(spec.get('platforms') or [])} · 스택 {spec.get('stack')} · 인프라 {spec.get('infra')}\n"
             "승인하면 design/ 와 api/ 가 본선에 커밋·잠금되고 구현이 시작됩니다. 반려 사유는 기록됩니다.")
@@ -326,7 +354,7 @@ def review(root, approver=None):
                      util.DESIGN_DIR, util.API_DIR, util.DOCS_DIR, ".gitignore", "CLAUDE.md")
     _save(root, st, "locked", version=version, hash=st["fingerprint"])
     cfg, st = _st(root)
-    _render(root, cfg, st)
+    _docs(root, cfg, st)
     return {"ok": True, "approved": True, "version": version,
             "message": f"계약 v{version} 확정 · 본선 커밋. {st['label']} — {st['next']}"}
 
@@ -395,7 +423,7 @@ def build(root):
     st["roles"], st["reports"] = roles, []
     _save(root, st, "dispatched", roles=roles, version=st["version"])
     cfg, st = _st(root)
-    _render(root, cfg, st)
+    _docs(root, cfg, st)
     return {"ok": True, "roles": roles, "worktrees": trees, "prompts": prompts,
             "message": (f"워크트리 {len(roles)}개 준비 (계약 v{st['version']}, 생성 상수 {len(files)}개). "
                         f"각 역할을 에이전트({', '.join(r + '-builder' for r in roles)})로 **병렬** 착수하되 prompts 의 "
@@ -487,7 +515,8 @@ def verify(root):
     st["verdict"] = result["verdict"]
     _save(root, st, "verified", score=result["score"], verdict=result["verdict"], blockers=len(result["blockers"]))
     cfg, st = _st(root)
-    dash = _render(root, cfg, st, result)
+    _docs(root, cfg, st)
+    cl = _checklist(root, st, result)
     proposals = [p for e in result["roles"].values() for p in ((e.get("report") or {}).get("proposals") or [])]
     if result["verdict"] == "pass":
         nxt = "⑦ ship — 사람 승인 뒤 본선 머지."
@@ -498,9 +527,9 @@ def verify(root):
         nxt = "build 로 재착수한다 (인계 자동 포함)."
     return {"ok": True, "verdict": result["verdict"], "score": result["score"], "threshold": result["threshold"],
             "blockers": result["blockers"], "components": result["components"], "parity": result["parity"],
-            "proposals": proposals, "doc": doc, "screens_page": page, "dashboard": dash,
+            "proposals": proposals, "doc": doc, "screens_page": page, "checklist": cl,
             "message": (f"점수 {result['score']}/{result['threshold']} → {result['verdict']}. "
-                        f"대시보드를 아티팩트로 발행해 사용자에게 보인다: {dash}\n"
+                        "checklist.markdown(투두 목록 + 분석)을 채팅에 그대로 보인다.\n"
                         + (f"화면 대조(사진, 레포에서 연다): {page}\n" if page else "")
                         + f"다음: {nxt}")}
 
@@ -530,7 +559,7 @@ def ship(root, approver=None):
     if os.path.isfile(page):
         prompt += f"\n화면 대조: {util.DOCS_DIR}/{reports.SCREENS_DIR}/index.html — 레포에서 열어 눈으로 확인하십시오."
     if approver is None:
-        return _pending(root, "ship", prompt)
+        return {**_pending(root, "ship", prompt), "summary": _summary(root, st), "checklist": _checklist(root, st, result)}
     decision = approver(prompt, items) or {"approved": False, "reason": "승인 채널 없음"}
     if not decision.get("approved"):
         reason = decision.get("reason") or "(사유 없음)"
@@ -552,7 +581,7 @@ def ship(root, approver=None):
     st["phase"] = "done"
     _save(root, st, "shipped", merges=merges, exceptions=items, version=st["version"])
     cfg, st = _st(root)
-    _render(root, cfg, st, result)
+    _docs(root, cfg, st)
     return {"ok": True, "approved": True, "merges": merges,
             "message": f"완료 — {len(merges)}개 브랜치를 본선에 머지했다. 새 요구는 import_design 또는 spec_save 로 새 사이클을 연다."}
 

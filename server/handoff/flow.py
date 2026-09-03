@@ -37,7 +37,7 @@ def next_action(st):
     if p == "api":
         return "api_submit(openapi) — design/ 의 화면·문서를 읽고 각 화면이 필요로 하는 데이터로 openapi.yaml 을 초안한다"
     if p == "review":
-        return "review() — 사람이 계약(design/ + api/ + 스펙)을 승인한다 (elicitation). 대시보드를 먼저 보인다"
+        return "review() — 사람이 계약(design/ + api/ + 스펙)을 승인한다 (elicitation). 요약 표(summary)를 먼저 채팅에 보인다"
     if p == "build":
         if st.get("roles"):
             pending = [r for r in st["roles"] if r not in st.get("reports", [])]

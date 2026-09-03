@@ -5,7 +5,7 @@
   api/openapi.yaml    백엔드 계약 (읽기 전용 — 잠금 뒤 바꾸면 재승인)
   shared/generated/   서버가 만든 상수 (워크트리마다 놓는다 — 손대면 검사가 잡는다)
   .handoff/           도구 상태 · 리포트 · 워크트리 (커밋하지 않는다)
-  docs/               사람용 문서 · 대시보드
+  docs/               사람용 문서 (md · 화면 대조)
 """
 import datetime
 import hashlib
@@ -104,6 +104,7 @@ EMPTY_STATE = {
     "roles": [],             # 이번 루프에 착수한 역할
     "reports": [],           # 리포트를 낸 역할
     "verdict": None,         # 마지막 verify 결과 (loop | pass)
+    "design_source": None,   # {"path", "url", "project_id"} — 패키지 출처 (요약 표에 보인다)
     "history": [],           # 서버가 적는 사건 기록 (감사용)
 }
 
@@ -189,7 +190,7 @@ def tree_hash(directory):
 
 
 def fingerprint(root):
-    """design/ + api/ 의 결합 지문 12자 — 승인 프롬프트와 대시보드에 같은 값이 찍힌다."""
+    """design/ + api/ 의 결합 지문 12자 — 승인 프롬프트와 요약 표에 같은 값이 찍힌다."""
     d = tree_hash(design_dir(root))
     a = sha_file(api_path(root)) if os.path.isfile(api_path(root)) else ""
     if not d and not a:
