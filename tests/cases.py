@@ -140,6 +140,15 @@ def implement(root, roles=("backend", "ios", "android"), hardcode=False, skip_sc
             body = "\n".join(f"let s{i} = Screens.{s}" for i, s in enumerate(screens))
             body += "\nlet a = ApiRoutes.getOrders; let b = ApiRoutes.createOrder; let c = ApiRoutes.getOrdersByOrderId"
             body += "\nlet p = DesignTokens.Spacing.md; let q = DesignTokens.Color.accent"
+            gen_s = open(os.path.join(t, "shared", "generated", f"Strings.{ext}"), encoding="utf-8").read()
+            grp = None
+            for line in gen_s.splitlines():
+                mg = re.search(r"(?:enum|object) (\w+) \{", line)
+                if mg and mg.group(1) != "Strings":
+                    grp = mg.group(1)
+                ml = re.search(r"(?:static let|val) `?(\w+)`? ", line)
+                if ml and grp:
+                    body += f"\nlet s_{grp}_{ml.group(1)} = Strings.{grp}.{ml.group(1)}"
             if hardcode and role == "ios":
                 body += '\nlet bad = "#0A84FF"\nview.padding(16)'
             w(os.path.join(t, f"apps/{role}", f"Main.{ext}"), body + "\n")
@@ -284,7 +293,7 @@ PROTO = """<!DOCTYPE html><html><head><script src="./support.js"></script></head
 <sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ true }}"><div><span sc-camel-on-click="{{ skipOnboarding }}">건너뛰기</span>
 <h1>{{ obSlide.title }}</h1><div sc-camel-on-click="{{ nextOnboarding }}">{{ obButtonLabel }}</div></div></sc-if>
 <sc-if value="{{ appVisible }}" hint-placeholder-val="{{ false }}"><div>
-<sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}"><div><span>forest</span><span>추천 믹싱</span>
+<sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}"><div><span>forest</span><span>추천 믹싱</span><span>이번 주 {{ streakCount }}일 연속</span>
 <div sc-camel-on-click="{{ p.open }}"><svg width="14" viewBox="0 0 24 24"><path d="M7 4.5v15z"></path></svg></div></div></sc-if>
 <sc-if value="{{ isStats }}" hint-placeholder-val="{{ false }}"><h1>기록</h1></sc-if>
 <div sc-camel-on-click="{{ setTabHome }}"><svg width="22" viewBox="0 0 24 24"><path d="M3 11l9-8z"></path></svg>홈</div>
@@ -348,6 +357,8 @@ def test_derive():
           st["onboarding.geonneottwigi"]["text"] == "건너뛰기" and st["home.chucheonMiksing"]["screen"] == "home"
           and st["settings.gimseoyeon"]["screen"] == "settings" and st["presets.eveningWave.name"]["text"] == "저녁 물결"
           and st["layers.wave.label"]["text"] == "파도" and any(v["text"] == "{} 재생 중" for v in st.values())
+          and st["home.ibeonJuIlYeonsok"]["text"] == "이번 주 {streakCount}일 연속" and st["home.ibeonJuIlYeonsok"]["params"] == ["streakCount"]
+          and st["home.ibeonJuIlYeonsok"]["source"] == "format"
           and any(v["text"] == "시작하기" for v in st.values()), sorted(st)[:20])
     check("derive: {{ }} 바인딩은 문구가 아니다", not any("obSlide" in k or "{{" in v["text"] for k, v in st.items()))
     ic = {i["name"]: i for i in derive.read(root, "icons.json")["icons"]}
@@ -401,6 +412,17 @@ def test_derive():
     check("derive: 프롬프트 — intent 먼저 · ICN 항목 · Strings/Icons", "design/derived/intent.md" in p and "ICN-01" in p and "Icons.tabHome" in p
           and "Strings.swift, Icons.swift" in p, p[:1500])
     check("derive: 프롬프트 — rules.json (앱만)", "design/derived/rules.json" in p and "design/derived/rules.json" not in r["prompts"]["backend"], p[:1500])
+    its = checks.items("ios", checks.targets(root))
+    kinds = {i["kind"] for i in its}
+    check("checks: 문구·핸들러 소비 항목", "string" in kinds and "handler" in kinds
+          and any(i["const"] == "Strings.Home.ibeonJuIlYeonsok" and i["id"].startswith("STR-") for i in its)
+          and any(i["const"] == "skipOnboarding" and i["id"].startswith("HND-") for i in its)
+          and not any(i["kind"] in ("string", "handler") for i in checks.items("backend", checks.targets(root))), sorted(kinds))
+    check("derive: 프롬프트 — 문구는 그룹 한 줄 · 핸들러 항목 · 포맷 안내", "Strings.Home.*" in p and "each one is a checklist item" in p
+          and "HND-01  handler" in p and "{name} placeholders are format strings" in p, p[:2500])
+    px = derive.px_match(['<style>--space-2:8.8px</style><div style="padding:16px;gap:12px;width:8px;border-radius:16px">'],
+                         {"a": {"kind": "dimension", "value": 16}, "b": {"kind": "dimension", "value": 8.8}, "c": {"kind": "color", "value": "#fff"}})
+    check("derive: 토큰/px 일치율", px == {"dims": 2, "dims_used": 1, "px": 4, "px_matched": 2}, px)
     check("derive: 프롬프트 — 컴포넌트(타입) 목록 · 매니페스트", "## Components" in p and "tab      `setTabHome` — 홈 (in shared; handler setTabHome; → home)" in p
           and "design/handoff.manifest.json" in p and "button   `skipOnboarding` — 건너뛰기 버튼" in p, p)
     summ = tools.status(root)["summary"]["markdown"]
@@ -413,7 +435,9 @@ def test_derive():
     pre = tools.precheck(root, "ios")
     kinds = sorted(h["kind"] for h in pre["hardcodes"])
     check("derive: raw-string · raw-font 검출", kinds == ["raw-font", "raw-string"], pre["hardcodes"])
-    check("derive: 아이콘 소비 항목", any(u.startswith("ICN-") for u in pre["consumption"]["unused"]) and pre["consumption"]["total"] == 3 + 4 + 4, pre["consumption"])
+    check("derive: 아이콘·문구·핸들러 소비 항목", any(u.startswith("ICN-") for u in pre["consumption"]["unused"])
+          and any(u.startswith("STR-") for u in pre["consumption"]["unused"]) and any(u.startswith("HND-") for u in pre["consumption"]["unused"])
+          and pre["consumption"]["total"] == 3 + 4 + 4 + 16 + 5, pre["consumption"])
 
 
 def test_flow_gates():
@@ -659,6 +683,12 @@ def test_violations_and_secrets():
     tools.build(root)
     implement(root)
     t = wt(root, "ios")
+    # 치수 검사는 종류가 맞는 문맥에서만: fixture 토큰 spacing.md=16 · radius.pill=999 · size.controlLg=48
+    w(os.path.join(t, "apps/ios/Dims.swift"), "a.frame(width: 16, height: 16)\nb.padding(16)\nc.cornerRadius(16)\nd.cornerRadius(999)\ne.frame(width: 999)\nf.frame(width: 48)\n")
+    pre = tools.precheck(root, "ios")
+    dims = sorted((h["line"], h["token"]) for h in pre["hardcodes"] if h["kind"] == "raw-dimension" and h["file"].endswith("Dims.swift"))
+    check("checks: 치수 하드코딩은 문맥 일치만", dims == [(2, "spacing.md"), (4, "radius.pill"), (6, "size.controlLg")], dims)
+    os.remove(os.path.join(t, "apps/ios/Dims.swift"))
     w(os.path.join(t, "api/openapi.yaml"), OPENAPI + "  /hack:\n    get: {}\n")
     w(os.path.join(t, "shared/generated/Screens.swift"), "// tampered\n")
     w(os.path.join(t, "backend/oops.py"), "x = 1\n")

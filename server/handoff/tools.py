@@ -208,6 +208,10 @@ def import_design(root, path=None, screens=None, components=None, url=None):
           screens=[s["id"] for s in m["screens"]], tokens=len(m["tokens"]))
     cfg, st = _st(root)
     warn = "" if m["tokens"] else "\n! 토큰이 없다 — 색·치수 하드코딩 검출이 비활성이다 (패키지에 tokens.json 이나 css 변수가 있으면 잡힌다)."
+    pxm = derive.px_match([util.read_text(os.path.join(util.design_dir(root), s["file"])) for s in m["screens"] if s.get("file")], m["tokens"])
+    if pxm["dims"] and pxm["px"] >= 10 and pxm["dims_used"] * 2 < pxm["dims"]:
+        warn += (f"\n! 치수 토큰 {pxm['dims']}개 중 {pxm['dims_used']}개만 프로토타입 px 값과 일치한다 (px {pxm['px']}곳 중 {pxm['px_matched']}곳). "
+                 "디자인 시스템과 프로토타입이 안 맞는다는 뜻 — 간격·반지름 토큰 소비(TOK)가 거의 불가능하고 하드코딩 검사도 그만큼 덜 잡는다. 사용자에게 알린다.")
     if sec["dropped"] or sec["masked"]:
         warn += ("\n! 보안 정리: " + (f"민감 파일 {len(sec['dropped'])}개를 뺐다 ({', '.join(sec['dropped'][:8])}) " if sec["dropped"] else "")
                  + (f"시크릿 {sec['secrets']}건 · 개인정보 {sec['pii']}건을 마스킹했다 ({', '.join(list(sec['masked'])[:8])})" if sec["masked"] else "")
@@ -229,7 +233,7 @@ def import_design(root, path=None, screens=None, components=None, url=None):
                            for c in comps],
             "navigation": {k: v for k, v in (detail.get("navigation") or {}).items() if k != "transitions"},
             "boards": m.get("boards", []), "tokens": len(m["tokens"]), "docs": m["docs"], "chats": m.get("chats", []),
-            "assets": len(m["assets"]), "hints": hints, "security": sec,
+            "assets": len(m["assets"]), "hints": hints, "security": sec, "token_px": pxm,
             "plan": _docs(root, cfg, st),
             "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 컴포넌트 {len(comps)}개 ({ctypes}) · 토큰 {len(m['tokens'])}개 · "
                         f"문서 {len(m['docs'])}개 · 파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · "

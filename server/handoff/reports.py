@@ -146,7 +146,8 @@ def kickoff(root, cfg, role, st, t, handoff):
                  + (f"allowed font families: {', '.join(r['fonts'])}; " if r.get("fonts") else "")
                  + "tokens and Strings.* are mandatory [C3])")
     if os.path.isfile(os.path.join(dv, "strings.json")) and role != "backend":
-        L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3])")
+        L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3]; "
+                 "entries with {name} placeholders are format strings — substitute the named value at runtime, never retype the text)")
     if os.path.isfile(os.path.join(dv, "icons.json")) and role != "backend":
         L.append("- design/derived/icons/*.svg + shared/generated/Icons.*   (icon assets — import each SVG under its name; Lucide style)")
     for d in m.get("docs", []):
@@ -212,8 +213,16 @@ def kickoff(root, cfg, role, st, t, handoff):
     if spec.get("divergences"):
         L.append(f"- Approved iOS/Android divergences (free): {', '.join(map(str, spec['divergences']))}")
     L += ["", "## Checklist (the server measures exactly these)"]
-    for i in checks.items(role, t):
+    its = checks.items(role, t)
+    for i in (x for x in its if x["kind"] != "string"):
         L.append(f"- {i['id']}  {i['label']:<40} " + (f"→ {i['const']}" if i["const"] else "→ real route handler"))
+    groups = {}
+    for i in (x for x in its if x["kind"] == "string"):
+        groups.setdefault(i["const"].rsplit(".", 1)[0], []).append(i)
+    for grp, rows in groups.items():
+        leaves = [r["const"].rsplit(".", 1)[1] for r in rows]
+        L.append(f"- {rows[0]['id']}..{rows[-1]['id']}  {grp + '.*':<40} → every key ({len(rows)}: "
+                 + ", ".join(leaves[:6]) + ("…" if len(leaves) > 6 else "") + ") — each one is a checklist item")
     if role != "backend" and m.get("tokens"):
         L.append(f"- TOK     {len(m['tokens'])} tokens → DesignTokens.* for every color/dimension that has one [C3]")
         L.append(f"- SHOT    optional: save screenshots to {wt}/.handoff/shots/<screenId>.png for the human compare page")

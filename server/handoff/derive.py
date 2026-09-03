@@ -23,6 +23,8 @@ from . import util
 DERIVED_DIR = "derived"
 _STATE_OPEN = re.compile(r'<sc-if\s+value="\{\{\s*(\w+)\s*\}\}"')
 _TEXT_NODE = re.compile(r">([^<>{}]*[^\s<>{}][^<>{}]*)<")
+_MIXED_NODE = re.compile(r">([^<>]*\{\{[^<>]*)<")           # 글자 + {{ 바인딩 }} 이 섞인 노드 → 포맷 문구
+_BIND = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
 _SVG = re.compile(r"<svg\b[^>]*>.*?</svg>", re.S)
 _HANDLER_BEFORE = re.compile(r'(?:onClick|sc-camel-on-click)="\{\{\s*([\w.]+)\s*\}\}"', re.I)
 _WORD = re.compile(r"[A-Za-z0-9]+|[가-힣]+")
@@ -323,6 +325,23 @@ def strings(html, screens, comps=()):
             continue
         seen.add(text)
         rows.append({"key": f"{scr}.{slug(text)}", "text": text, "screen": scr, "source": "markup"})
+    for m in _MIXED_NODE.finditer(markup):
+        raw = htmlmod.unescape(re.sub(r"\s+", " ", m.group(1))).strip()
+        params = []
+        def _ph(b):
+            name = re.split(r"[^\w]", b.group(1).strip())[-1] or "value"
+            name = name[:1].lower() + name[1:]
+            params.append(name)
+            return "{" + name + "}"
+        text = _BIND.sub(_ph, raw)
+        lit = re.sub(r"\{\w+\}", "", text).strip()
+        if not params or not lit or not (_KO.search(lit) or len(re.sub(r"[^A-Za-z]", "", lit)) >= 2):
+            continue                                       # 순수 바인딩이거나 글자가 없다
+        if text in seen:
+            continue
+        seen.add(text)
+        scr = screen_at(regions, m.start())
+        rows.append({"key": f"{scr}.{slug(lit)}", "text": text, "screen": scr, "source": "format", "params": params})
     ents = entities(html)
     for arr, val in ents.items():
         if arr.startswith("_") or not isinstance(val, list):
@@ -355,6 +374,18 @@ def strings(html, screens, comps=()):
         else:
             used[k] = 1
     return rows
+
+
+def px_match(html_texts, tokens):
+    """프로토타입 마크업(<style> 밖)의 px 값과 치수 토큰 값의 일치 — 토큰 소비(TOK)가 가능한지 미리 안다.
+    {"dims": n, "dims_used": k, "px": m, "px_matched": j}"""
+    dims = {float(v["value"]) for v in tokens.values() if v.get("kind") == "dimension"}
+    px = []
+    for html in html_texts:
+        body = re.sub(r"<style\b.*?</style>", "", html, flags=re.S | re.I)
+        px += [float(x) for x in re.findall(r"\b(\d+(?:\.\d+)?)px\b", body)]
+    used = {v for v in px if v in dims}
+    return {"dims": len(dims), "dims_used": len(used), "px": len(px), "px_matched": sum(1 for v in px if v in dims)}
 
 
 # ─────────────────────────── icons ───────────────────────────

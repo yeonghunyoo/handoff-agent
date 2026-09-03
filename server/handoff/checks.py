@@ -29,6 +29,21 @@ _DIM_RES = [
     re.compile(r"\bRoundedCornerShape\((\d+(?:\.\d+)?)"),
 ]
 _KO_LIT = re.compile(r"[\"'][^\"'\n]*[가-힣][^\"'\n]*[\"']")
+# 치수 토큰은 종류가 맞는 문맥에서만 잡는다 — radius 8 이 점 크기 8 로 쓰인 것은 하드코딩이 아니다
+def _dim_kind(key):
+    """토큰 키 → 문맥 종류. radius.* · corner.* → radius, space.* · spacing.* · gap.* → space, 그 외 None(어디서든 잡는다)."""
+    k = key.lower()
+    if "radius" in k or k.startswith("corner"):
+        return "radius"
+    if k.startswith(("space", "spacing", "gap", "inset")):
+        return "space"
+    return None
+
+
+_DIM_CTX = {
+    "radius": re.compile(r"cornerRadius|RoundedRectangle|RoundedCornerShape|clipShape|\.clip\(|shape\s*=|[Rr]adius"),
+    "space": re.compile(r"padding|spacing|spacedBy|Spacer|offset|lineSpacing|gap|inset"),
+}
 _FONT_RE = re.compile(r"(?:Font\.custom|fontFamily\s*=\s*FontFamily|FontFamily\(|Font\(name:)\s*\(?\s*[\"']([A-Za-z][\w -]*)[\"']")
 _SKIP_RE = re.compile(r"(@pytest\.mark\.skip|pytest\.skip|@unittest\.skip|XCTSkip|@Ignore\b|"
                       r"\.skip\(|\bxit\(|\bxdescribe\(|it\.skip|test\.skip|@Disabled\b|t\.Skip\()")
@@ -48,7 +63,15 @@ def targets(root):
     icons = (derive.read(root, "icons.json") or {}).get("icons") or []
     strings = (derive.read(root, "strings.json") or {}).get("strings") or []
     rules = derive.read(root, "rules.json") or {}
-    return {"routes": rs, "screens": m["screens"], "tokens": tokens, "icons": icons, "strings": strings, "rules": rules}
+    handlers = sorted(((derive.read(root, "behavior.json") or {}).get("handlers") or {}).keys())
+    return {"routes": rs, "screens": m["screens"], "tokens": tokens, "icons": icons, "strings": strings, "rules": rules,
+            "handlers": handlers}
+
+
+def string_const(row):
+    """strings.json 행 → 생성 상수 이름 (gen._string_tree 와 같은 규칙)."""
+    grp, _, leaf = row["key"].partition(".")
+    return f"Strings.{gen.ident(grp, upper=True)}.{gen.ident(leaf.replace('.', ' '))}"
 
 
 def items(role, t):
@@ -79,6 +102,19 @@ def items(role, t):
             out.append({"id": f"ICN-{i:0{w}d}", "kind": "icon", "label": ic["name"], "const": const,
                         "rx": re.compile(re.escape(const) + r"\b|[\"']" + re.escape(ic["name"]) + r"[\"']"),
                         "name": ic["name"]})
+        # 문구 — 화면의 모든 카피를 Strings.* 로 썼는가 (빼먹은 문구가 보인다). 그룹별로 id 가 이어지게 정렬한다
+        strs = sorted(t.get("strings") or [], key=lambda r: (r["key"].partition(".")[0], r["key"]))
+        w = max(2, len(str(len(strs))))
+        for i, r in enumerate(strs, 1):
+            const = string_const(r)
+            out.append({"id": f"STR-{i:0{w}d}", "kind": "string", "label": f"{r['screen']}: {r['text'][:40]}", "const": const,
+                        "rx": re.compile(re.escape(const) + r"\b"), "name": r["key"]})
+        # 핸들러 — behavior.json 의 핸들러 이름이 코드에 있는가 (동작이 구현됐는지의 최소 증거)
+        hs = t.get("handlers") or []
+        w = max(2, len(str(len(hs))))
+        for i, h in enumerate(hs, 1):
+            out.append({"id": f"HND-{i:0{w}d}", "kind": "handler", "label": f"handler {h}", "const": h,
+                        "rx": re.compile(r"\b" + re.escape(h) + r"\b"), "name": h})
     return out
 
 
@@ -174,11 +210,18 @@ def hardcodes(tree, role_path, cfg, role, t):
                     out.append({"file": rel, "line": ln, "kind": "hex-color", "token": colors[key],
                                 "text": s[:120]})
             for rx in _DIM_RES:
+                hit = False
                 for m in rx.findall(line):
                     if float(m) in dims and float(m) not in (0.0, 1.0):
+                        ctx = _DIM_CTX.get(_dim_kind(dims[float(m)]))
+                        if ctx and not ctx.search(line):
+                            continue                       # 종류가 다른 문맥 — 값이 같을 뿐이다
                         out.append({"file": rel, "line": ln, "kind": "raw-dimension",
                                     "token": dims[float(m)], "text": s[:120]})
+                        hit = True
                         break
+                if hit:
+                    break
             for p in paths:
                 if f'"{p}"' in line or f"'{p}'" in line:
                     out.append({"file": rel, "line": ln, "kind": "raw-path", "token": None, "text": s[:120]})
