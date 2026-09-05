@@ -27,11 +27,13 @@ API_FILE = "openapi.yaml"
 GEN_DIR = os.path.join("shared", "generated")
 DOCS_DIR = "docs"
 
-ROLES = ("backend", "ios", "android")
-APPS = ("ios", "android")
+ROLES = ("backend", "ios", "android", "web")
+APPS = ("ios", "android", "web")
+MOBILE = ("ios", "android")          # 파리티 짝 — web 은 모바일 합집합과 따로 대조한다 (score.evaluate)
+TARGETS = ("mobile", "web", "mixed")  # 디자인 대상 — design.scan 이 패키지에서 읽고, 사람이 import_design(target=) 로 덮는다
 
 DEFAULTS = {
-    "roles": {"backend": "backend", "ios": "apps/ios", "android": "apps/android"},
+    "roles": {"backend": "backend", "ios": "apps/ios", "android": "apps/android", "web": "apps/web"},
     "kotlin_package": "shared.generated",
     "score": {
         "threshold": 85,
@@ -39,10 +41,10 @@ DEFAULTS = {
         "hardcode_penalty": 2,
         "divergence_penalty": 10,
     },
-    "verify": {"commands": {"backend": [], "ios": [], "android": []}, "timeout_sec": 600},
+    "verify": {"commands": {"backend": [], "ios": [], "android": [], "web": []}, "timeout_sec": 600},
     # 착수 방식. serial 이 기본이다 — iOS·Android 툴체인을 한 기기에서 동시에 돌리면 코어를 나눠 써서
     # 각 빌드가 느려지고, 한쪽이 막히면 세션 전체가 길어진다. 코어가 넉넉하면 "parallel" 로 바꾼다.
-    "dispatch": {"mode": "serial", "order": ["backend", "ios", "android"]},
+    "dispatch": {"mode": "serial", "order": ["backend", "ios", "android", "web"]},
     "test_globs": [
         "**/test_*.py", "**/*_test.py", "**/tests/**/*.py",
         "**/*.test.ts", "**/*.test.tsx", "**/*.test.js", "**/*.spec.ts", "**/*.spec.js",

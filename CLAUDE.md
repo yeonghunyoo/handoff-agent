@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 무엇인가
 
 Claude Code 플러그인. Claude Design 핸드오프 패키지를 프론트 계약으로, `api/openapi.yaml` 을 백엔드 계약으로 받아
-iOS · Android · backend 를 역할별 git 워크트리에서 구현하고(기본 직렬 — config 의 dispatch.mode 로 병렬 전환),
+iOS · Android · web · backend 를 역할별 git 워크트리에서 구현하고(기본 직렬 — config 의 dispatch.mode 로 병렬 전환),
 서버가 실측한 것만 사람 승인 뒤 머지한다.
 설계 원칙과 금지 사항은 `AGENT.md` 가 정본이다 — 코드를 고치기 전에 먼저 읽는다. 이 파일은 그것을 반복하지 않는다.
 
@@ -48,7 +48,7 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 
 | 단계 | 읽는 것 | 만드는 것 |
 |---|---|---|
-| import | zip/tar.gz/standalone HTML/폴더 | `design/` (정본, 읽기 전용) · `design/derived/*` (`derive.write_all` — 문구·아이콘·모델·전이·**컴포넌트(타입)**·**내비게이션**·의도·규칙·**레이아웃 트리** `layout/<screen>.json` — 무손실, 빌더는 HTML 대신 이것을 옮긴다) · 사람이 확정하면 `design/handoff.manifest.json` v2 (`design.confirm_screens` 가 화면·컴포넌트를 쓰고 `design.write_manifest` 가 상세를 채운다) |
+| import | zip/tar.gz/standalone HTML/폴더 | `design/` (정본, 읽기 전용) · `design/derived/*` (`derive.write_all` — 문구·아이콘·모델·전이·**컴포넌트(타입)**·**내비게이션**·의도·규칙·**레이아웃 트리** `layout/<screen>.json` — 무손실, 빌더는 HTML 대신 이것을 옮긴다) · 사람이 확정하면 `design/handoff.manifest.json` v3 (`design.confirm_screens` 가 화면·컴포넌트·대상(target)을 쓰고 `design.write_manifest` 가 상세를 채운다) |
 | spec | 사람 답 (부분 저장 누적: `.handoff/spec.draft.json`) | `.handoff/spec.json` |
 | api | `api_submit` 본문 | `api/openapi.yaml` (`api.validate` 통과분만) |
 | review ✋ | 위 셋 | `state.locked.hash` + 본선 커밋 |
@@ -66,6 +66,8 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 - **생성 상수 추가** (`gen.py`): `ApiRoutes` `Screens` `DesignTokens` `Strings` `Icons` 는 "앱이 부르는 이름 = 검사가 세는 이름"이다. 새 상수를 만들면 `checks.targets/items` 에 소비 항목(`API-xx` `SCR-xx` `ICN-xx`…)을 같이 넣어야 검사가 센다. 같은 입력이면 같은 바이트여야 한다 (`gen.drift` 가 바이트 대조).
 - **보호 구역·민감 파일 패턴**: `hooks/guard.py` 와 `server/handoff/leaks.py` 가 각각 따로 든다 (훅은 서버를 import 하지 못하므로 의도된 중복). 한쪽을 고치면 다른 쪽도 맞춘다. 대상 레포의 `.gitignore` 블록은 `leaks.SENSITIVE_GLOBS` 에서 생성된다.
 - **마스킹은 한 곳**: 채팅으로 나가는 것(MCP 응답은 `server._out`, CLI 는 `run.py`, 이력은 `util.record`, 리포트·스펙·`docs/`)은 전부 `leaks.mask_all(_deep)` (시크릿 + 개인정보)를 거친다. 새 출력 경로를 만들면 같은 함수를 건다. 패키지 등록은 `leaks.sanitize_tree` 가 `design/` 을 정리한다 — 개인정보 마스킹은 `chats/`·README 에만 (화면 HTML 의 예시 데이터는 보존).
+- **web 역할은 게이트 뒤에만 있다**: 모바일 경로는 손대지 않는다는 원칙이다. 화면 변형 묶기(`design.group_variants`)는 `target != mobile` 일 때만, TS·`tokens.css` 생성은 `"web" in platforms` 일 때만, `.css` 읽기(`checks.WEB_EXT`)·`var(--x)` 토큰 소비·`@media` 면제는 `role == "web"` 일 때만, web↔모바일 파리티(`checks.parity_web`)는 web 역할이 있을 때만 돈다. iOS↔Android 파리티(`checks.parity`)는 그대로다. `tests/cases.py` 의 `test_web_role` 끝에 "모바일만이면 web 흔적 없음" 회귀 검사가 있다 — 게이트를 옮기면 그것부터 깨진다.
+- **디자인 대상(`target`)** 은 `design.detect_target` 이 패키지에서 읽는다 (프레임 import 이름 · `hint-size` 폭 · `@media`; 근거 없으면 mobile). 사람이 `import_design(target=)` 로 덮으면 매니페스트에 남아 감지보다 우선한다. `platforms`(인터뷰)와는 독립이고, 어긋나면 요약 표에 경고만 낸다.
 - **설정 기본값** 은 `util.DEFAULTS` (역할 경로 `roles` · 점수 가중치·임계치 · `verify.commands` · `test_globs`). 대상 레포의 `.handoff/config.json` 이 덮어쓴다.
 
 ### 언어 규칙

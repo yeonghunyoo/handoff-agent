@@ -63,6 +63,16 @@ def machine(role):
         L.append("  AGP needs JDK 17. If no 17 is listed, either set a Gradle toolchain that can download it "
                  "(`java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }` + foojay resolver) or report `blocked` — "
                  "do not spend turns guessing brew cask names.")
+    elif role == "web":
+        node = _sh("node --version")
+        L.append(f"- node: {node or 'NOT FOUND — report blocked'}"
+                 + (" (needs ≥ 20 for Next.js 15 / Vite 6; if older, report blocked rather than downgrading the framework)" if node else ""))
+        pms = [(n, _sh(f"{n} --version")) for n in ("pnpm", "npm", "yarn")]
+        L.append("- package managers: " + (" · ".join(f"{n} {v}" for n, v in pms if v) or "none detected — report blocked")
+                 + ". Use the one whose lockfile exists in the role path; with no lockfile prefer pnpm, then npm. Never mix two.")
+        pw = _sh("npx --no-install playwright --version 2>/dev/null")
+        L.append(f"- playwright: {pw or 'not installed'} — screenshots need `npx playwright install chromium` once; "
+                 "if the install fails (no network), put the screenshot step in report.human_check instead of retrying.")
     free = _sh("df -h / | tail -1 | awk '{print $4}'")
     if free:
         L.append(f"- Free disk: {free} (Gradle caches and DerivedData eat GBs — if a build fails on space, report it, do not silently retry)")
@@ -217,12 +227,17 @@ def kickoff(root, cfg, role, st, t, handoff):
     else:
         L.append("- design/*.html   (screens — read them to understand what data each screen needs)")
     L.append(f"- api/openapi.yaml   (backend contract — {'implement every route' if role == 'backend' else 'call routes through ApiRoutes.*'})")
-    ext = ".swift" if role == "ios" else ".kt"
+    ext = {"ios": ".swift", "android": ".kt", "web": ".ts"}.get(role, ".kt")
     if role != "backend":
         L.append(f"- shared/generated/ApiRoutes{ext}, Screens{ext}"
                  + (f", DesignTokens{ext}" if m.get("tokens") else "")
                  + (f", Strings{ext}, Icons{ext}" if os.path.isdir(dv) else "")
+                 + (" + tokens.css (import it once at the app root; CSS consumes tokens as var(--key-with-dashes))"
+                    if role == "web" and m.get("tokens") else "")
                  + "   (consume; never edit) [C2][C3]")
+    if role == "web":
+        L.append("- design/*.html <style> blocks   (the shared CSS the layout tree's `class` names point at — move those rules into "
+                 "your CSS Modules; the tree carries inline styles, the <style> block carries class rules and @media)")
     comps = _components_of(root, m)
     if comps and role != "backend":
         L += ["", "## Components (typed — build each as its type on the platform; overlays are NOT screens)"]
@@ -266,6 +281,14 @@ def kickoff(root, cfg, role, st, t, handoff):
         L.append(f"- Project structure: {stack.get(role + '_project') or 'existing'}")
         L.append(f"- Backend: {stack.get('backend')} · auth={infra.get('auth')}")
         L.append(f"- Platforms in this build: {', '.join(plats)}")
+        target = m.get("target") or "mobile"
+        L.append(f"- Design target (read from the package{' — confirmed by the human' if m.get('target_source') == 'manifest' else ''}): {target}")
+        if role == "web" and target == "mobile":
+            L.append("  The design is phone-sized. Render it as ONE centered column (max-width 480px, page background from the tokens) on every "
+                     "viewport. Do not invent a desktop layout, sidebars or multi-column grids the design does not show.")
+        elif role != "web" and target == "web":
+            L.append("  The design is desktop-sized. Build the narrowest layout it implies for the phone; ignore desktop-only breakpoints, "
+                     "sidebars and hover-only affordances, and list what you dropped in report.divergences.")
     if spec.get("divergences"):
         L.append(f"- Approved iOS/Android divergences (free): {', '.join(map(str, spec['divergences']))}")
     L += ["", "## Checklist (the server measures exactly these)"]
@@ -302,7 +325,10 @@ def kickoff(root, cfg, role, st, t, handoff):
              if role == "android" else
              "  Iterate with `xcodebuild -destination 'generic/platform=iOS Simulator' build -quiet` (no simulator boot); "
              "`build-for-testing` once, then `test-without-building` per cycle; the simulator and screenshots come last."
-             if role == "ios" else ""),
+             if role == "ios" else
+             "  Iterate with `tsc --noEmit` (type errors only, seconds); run `vitest --run` per cycle; `next build` / `vite build`, "
+             "lint and Playwright screenshots come ONCE at the end."
+             if role == "web" else ""),
           "- Never burn turns waiting. A command that may exceed ~2 minutes goes `run_in_background: true` with its output to a log file; "
           "then wait with ONE until-loop (`until grep -qE 'BUILD (SUCCESSFUL|FAILED)' <log>; do sleep 5; done`). "
           "Do NOT poll with `true`, `echo waiting`, or repeated `tail` — each one is a wasted turn and grows your context.",
@@ -387,10 +413,11 @@ def screens_page(root, st, roles):
             cells.append("<td>" + ("".join(f'<img src="{_esc(i)}" alt="{_esc(s["id"])} {r}">' for i in imgs)
                                    or '<span class="none">없음</span>') + "</td>")
         rows.append(f"<tr><th>{_esc(s['id'])}<br><small>{_esc(s['title'])}</small></th>{''.join(cells)}</tr>")
+    fw, fh = (1280, 800) if (m.get("target") or "mobile") != "mobile" else (390, 844)     # 디자인 대상별 원본 폭
     page = (f"<!doctype html><html lang=\"ko\"><meta charset=\"utf-8\"><title>화면 대조 v{st['version']}</title>"
             "<style>body{font:14px system-ui;margin:1rem}table{border-collapse:collapse}td,th{border:1px solid #ccc;"
-            "padding:.5rem;vertical-align:top;text-align:left}iframe{width:390px;height:844px;border:0}"
-            "img{max-width:390px;display:block;margin-bottom:.5rem}.none{color:#999}</style>"
+            f"padding:.5rem;vertical-align:top;text-align:left}}iframe{{width:{fw}px;height:{fh}px;border:0}}"
+            f"img{{max-width:{fw}px;display:block;margin-bottom:.5rem}}.none{{color:#999}}</style>"
             f"<h1>화면 대조 — 계약 v{st['version']}</h1><p>왼쪽이 디자인 원본(design/), 오른쪽이 각 앱의 스크린샷.</p>"
             "<table><tr><th>화면</th><th>디자인</th>" + "".join(f"<th>{r}</th>" for r in apps) + "</tr>"
             + "".join(rows) + "</table></html>")
@@ -431,8 +458,13 @@ def summary(root, st, routes=None):
         rows.append(("컴포넌트", f"{len(comps)}개" + (" (사람 확정)" if m.get("components_confirmed") else "")))
     rows.append(("계약", f"v{st.get('version', 0)} · 지문 [{st.get('fingerprint')}] · API {len(routes or [])}개"))
     rows.append(("플랫폼", ", ".join(spec.get("platforms") or []) or "-"))
+    tgt = m.get("target") or "mobile"
+    plats_ = [str(p).lower() for p in (spec.get("platforms") or [])]
+    mismatch = (" — ! 플랫폼과 어긋난다 (모바일 디자인으로 web 을 만든다: 좁은 레이아웃을 가운데 놓는다)" if tgt == "mobile" and plats_ == ["web"] else
+                " — ! 플랫폼과 어긋난다 (데스크톱 디자인으로 앱을 만든다: 좁은 레이아웃만 옮긴다)" if tgt == "web" and "web" not in plats_ and plats_ else "")
+    rows.append(("디자인 대상", f"{tgt} ({'사람 확정' if m.get('target_source') == 'manifest' else '패키지에서 감지'})" + mismatch))
     rows.append(("백엔드 스택", stack.get("backend") or "-"))
-    for k in ("ios_project", "android_project"):
+    for k in ("ios_project", "android_project", "web_project"):
         if stack.get(k):
             rows.append((f"{k.split('_')[0]} 프로젝트", stack[k]))
     sc = infra_mod.scale(infra.get("scale"))
@@ -488,6 +520,11 @@ def checklist(result, version):
     if result["parity"]:
         L.append("**파리티 (iOS ↔ Android)**")
         for g in result["parity"]:
+            L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐")
+        L.append("")
+    if result.get("parity_web"):
+        L.append("**파리티 (web ↔ 모바일)** — 모바일은 iOS·Android 중 하나라도 한 것을 기준으로 잰다")
+        for g in result["parity_web"]:
             L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐")
         L.append("")
     # 분석 — 숫자에서 나오는 사실만

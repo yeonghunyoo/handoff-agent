@@ -18,6 +18,14 @@ from . import api, derive, design, gen, git, leaks, util
 
 CODE_EXT = {".swift", ".kt", ".kts", ".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb",
             ".rs", ".cs", ".dart", ".m", ".mm", ".xml", ".yaml", ".yml", ".toml", ".json", ".sql"}
+WEB_EXT = CODE_EXT | {".css", ".scss"}       # web 역할만 — CSS 의 var(--token) 소비와 hex/px 하드코딩을 재려면 읽어야 한다
+_CSS_DIM_RE = re.compile(r"\b(?:gap|row-gap|column-gap|padding(?:-\w+)?|margin(?:-\w+)?|border(?:-\w+)?-radius|inset|top|left|right|bottom)"
+                         r"\s*:\s*(\d+(?:\.\d+)?)px\b")
+_CSS_VAR_USE = re.compile(r"var\(\s*(--[a-z0-9-]+)")
+
+
+def _exts(role):
+    return WEB_EXT if role == "web" else CODE_EXT
 SKIP_DIRS = {".git", ".handoff", "node_modules", "build", ".build", "dist", "DerivedData", "Pods",
              ".gradle", "__pycache__", ".venv", "venv", "generated"}
 _HEX_RE = re.compile(r"#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b")
@@ -57,8 +65,10 @@ def targets(root):
     strings = (derive.read(root, "strings.json") or {}).get("strings") or []
     rules = derive.read(root, "rules.json") or {}
     handlers = sorted(((derive.read(root, "behavior.json") or {}).get("handlers") or {}).keys())
+    comps = (derive.read(root, "components.json") or {}).get("components") or []
+    gestures = sorted({c["handler"] for c in comps if c.get("type") == "gesture" and c.get("handler")})
     return {"routes": rs, "screens": m["screens"], "tokens": tokens, "icons": icons, "strings": strings, "rules": rules,
-            "handlers": handlers}
+            "handlers": handlers, "gesture_handlers": gestures, "target": m.get("target") or "mobile"}
 
 
 def string_const(row):
@@ -118,14 +128,15 @@ def is_test(rel, cfg):
     return any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch("/" + rel, g) for g in cfg["test_globs"])
 
 
-def iter_code(tree, role_path, cfg, tests=None):
+def iter_code(tree, role_path, cfg, tests=None, role=None):
     base = os.path.join(tree, role_path)
     if not os.path.isdir(base):
         return
+    exts = _exts(role)
     for d, dirs, names in os.walk(base):
         dirs[:] = [x for x in dirs if x not in SKIP_DIRS and not x.startswith(".")]
         for n in names:
-            if os.path.splitext(n)[1].lower() not in CODE_EXT:
+            if os.path.splitext(n)[1].lower() not in exts:
                 continue
             p = os.path.join(d, n)
             rel = os.path.relpath(p, tree).replace(os.sep, "/")
@@ -140,9 +151,9 @@ def iter_code(tree, role_path, cfg, tests=None):
             yield rel, util.read_text(p)
 
 
-def _scan(tree, role_path, cfg, its, tests):
+def _scan(tree, role_path, cfg, its, tests, role=None):
     used = {i["id"]: False for i in its}
-    for _, text in iter_code(tree, role_path, cfg, tests=tests):
+    for _, text in iter_code(tree, role_path, cfg, tests=tests, role=role):
         for i in its:
             if not used[i["id"]] and i["rx"].search(text):
                 used[i["id"]] = True
@@ -154,24 +165,29 @@ def _scan(tree, role_path, cfg, its, tests):
 
 
 def consumption(tree, role_path, cfg, role, t):
-    return _scan(tree, role_path, cfg, items(role, t), tests=False)
+    return _scan(tree, role_path, cfg, items(role, t), tests=False, role=role)
 
 
 def test_coverage(tree, role_path, cfg, role, t):
-    return _scan(tree, role_path, cfg, items(role, t), tests=True)
+    return _scan(tree, role_path, cfg, items(role, t), tests=True, role=role)
 
 
-def token_usage(tree, role_path, cfg, t):
-    """참조된 토큰 키 목록 — 파리티 재료."""
+def token_usage(tree, role_path, cfg, t, role=None):
+    """참조된 토큰 키 목록 — 파리티 재료. web 은 CSS/TSX 의 var(--token) 도 같은 토큰 소비로 센다."""
     consts = {v["const"]: k for k, v in t["tokens"].items()}
     if not consts:
         return []
     rx = re.compile(r"\bDesignTokens(?:\.[A-Za-z_]\w*)+")
+    by_var = {gen.css_var(k): k for k in t["tokens"]} if role == "web" else {}
     found = set()
-    for _, text in iter_code(tree, role_path, cfg, tests=False):
+    for _, text in iter_code(tree, role_path, cfg, tests=False, role=role):
         for m in rx.findall(text):
             if m in consts:
                 found.add(consts[m])
+        if by_var:
+            for m in _CSS_VAR_USE.findall(text):
+                if m in by_var:
+                    found.add(by_var[m])
     return sorted(found)
 
 
@@ -190,19 +206,24 @@ def hardcodes(tree, role_path, cfg, role, t):
     have_strings = bool(t.get("strings"))
     fonts = [f.lower() for f in (t.get("rules") or {}).get("fonts") or []]
     out = []
-    for rel, text in iter_code(tree, role_path, cfg, tests=False):
-        if not rel.lower().endswith((".swift", ".kt", ".kts", ".java", ".dart", ".ts", ".tsx", ".js", ".jsx")):
+    web = role == "web"
+    code_ext = (".swift", ".kt", ".kts", ".java", ".dart", ".ts", ".tsx", ".js", ".jsx") + ((".css", ".scss") if web else ())
+    dim_res = _DIM_RES + ([_CSS_DIM_RE] if web else [])
+    for rel, text in iter_code(tree, role_path, cfg, tests=False, role=role):
+        if not rel.lower().endswith(code_ext):
             continue
         for ln, line in enumerate(text.splitlines(), 1):
             s = line.strip()
             if s.startswith(("//", "*", "/*", "#")):
                 continue
+            if web and "@media" in line:
+                continue                                   # 브레이크포인트는 토큰이 아니다 — @media 안에는 var() 를 쓸 수 없다
             for m in _HEX_RE.findall(line):
                 key = m.lower()[:7]
                 if key in colors:
                     out.append({"file": rel, "line": ln, "kind": "hex-color", "token": colors[key],
                                 "text": s[:120]})
-            for rx in _DIM_RES:
+            for rx in dim_res:
                 hit = False
                 for m in rx.findall(line):
                     if float(m) in dims and float(m) not in (0.0, 1.0):
@@ -260,6 +281,35 @@ def parity(a, b, approved_topics):
 def _covered(name, topics):
     n = str(name).lower()
     return any(t and (t.lower() in n or n in t.lower()) for t in topics)
+
+
+def union_eval(evals, name="mobile"):
+    """여러 앱의 소비·토큰 합집합을 하나의 가짜 평가로 — web↔모바일 파리티의 비교 상대. 항목은 '하나라도 썼으면 썼다'."""
+    items = {}
+    for e in evals:
+        for i in e["consumption"]["items"]:
+            cur = items.get(i["id"])
+            if cur is None:
+                items[i["id"]] = dict(i)
+            elif i["used"]:
+                cur["used"] = True
+    tokens = sorted({tok for e in evals for tok in e["tokens"]})
+    return {"role": name, "consumption": {"items": [items[k] for k in sorted(items)]}, "tokens": tokens}
+
+
+def parity_web(web, mobiles, approved_topics, exempt_handlers=()):
+    """web ↔ 모바일 합집합 파리티. 같은 parity() 를 재사용하고 pair 라벨만 붙인다.
+    gesture 핸들러(스와이프·롱프레스)는 웹에 네이티브 대응이 없으므로 web 쪽에서만 자동 면제한다."""
+    if not mobiles:
+        return []
+    gaps = parity(web, union_eval(mobiles), approved_topics)
+    ex = set(exempt_handlers or ())
+    out = []
+    for g in gaps:
+        if g["kind"] == "handler" and g["missing"] == "web" and g["id"].split(" ", 1)[-1] in ex:
+            continue
+        out.append({**g, "pair": "web↔mobile"})
+    return out
 
 
 # ─────────────────────────── 브랜치 · 위반 ───────────────────────────
@@ -395,9 +445,9 @@ def run_verify(root, cfg, role):
 
 # ─────────────────────────── 시크릿 ───────────────────────────
 
-def secret_hits(tree, role_path, cfg):
+def secret_hits(tree, role_path, cfg, role=None):
     out = []
-    for rel, text in iter_code(tree, role_path, cfg):
+    for rel, text in iter_code(tree, role_path, cfg, role=role):
         if leaks.EXAMPLE_RE.search(rel):
             continue
         for ln, line in enumerate(text.splitlines(), 1):

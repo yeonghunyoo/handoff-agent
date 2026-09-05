@@ -24,7 +24,8 @@ from . import util
 
 SKIP_DIRS = {"assets", "asset", "images", "img", "fonts", "node_modules", "__MACOSX", "js", "styles", "uploads", "screenshots"}
 MANIFEST_NAME = "handoff.manifest.json"       # 사람이 확정한 화면·컴포넌트 + 서버가 채운 상세 — design/ 안에 살아 지문에 든다
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3                          # v3: target · 화면 variants · path (없으면 기본값 — v2 파일도 그대로 읽힌다)
+DERIVED = "derived"                           # 서버 파생물 — 화면 탐색에서 뺀다 (안의 html 이 화면으로 잡히면 안 된다)
 IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 HTML_EXT = (".html", ".htm")
 
@@ -36,6 +37,14 @@ _SECTION_RE = re.compile(
 _CSS_VAR_RE = re.compile(r"--([A-Za-z][\w-]*)\s*:\s*([^;}]+)")
 _STATE_RE = re.compile(r"<sc-if\s+value=\"\{\{\s*(is[A-Z]\w*)\s*\}\}\"")
 _CANVAS_RE = re.compile(r'<meta\s+name="design_doc_mode"\s+content="canvas"', re.I)
+# 디자인 대상 감지 — 프레임 import 이름(강한 근거) · hint-size 폭(강한 근거) · @media 폭 질의(약한 근거). 근거가 없으면 mobile.
+_FRAME_RE = re.compile(r'from="[^"]*?\b(ios|android|iphone|phone|mobile|browser|desktop|web)[-_]?(?:device|frame)[^"]*"', re.I)
+_HINT_SIZE_RE = re.compile(r'hint-size="(\d+)px', re.I)
+_MEDIA_RE = re.compile(r"@media[^{]*\((?:min|max)-width\s*:", re.I)
+_MOBILE_FRAMES = ("ios", "android", "iphone", "phone", "mobile")
+# 브레이크포인트 변형 — 파일 stem 이 구분자 + 접미로 끝날 때만 (desktop/tablet/mobile/phone 또는 320 이상 폭). 상태·섹션 화면에는 안 쓴다
+_VARIANT_RE = re.compile(r"^(.+?)[\s._-]+(desktop|tablet|mobile|phone|(?:@|w)?(\d{3,4})(?:px)?)$", re.I)
+_VARIANT_WIDTH = {"desktop": 1280, "tablet": 768, "mobile": 390, "phone": 390}
 _COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgba?|hsla?|oklch|oklab|color)\(.*\))$")
 _DIM_RE = re.compile(r"^(-?\d+(?:\.\d+)?)(px|pt|dp|sp|rem|em)?$")
 
@@ -270,7 +279,7 @@ def _collapse_single_dir(d):
 def _walk(d):
     for base, dirs, names in os.walk(d):
         dirs[:] = sorted(x for x in dirs if not x.startswith(".") and not x.startswith("_")
-                         and x.lower() not in SKIP_DIRS)
+                         and x.lower() not in SKIP_DIRS and not (base == d and x == DERIVED))
         for n in sorted(names):
             if n.startswith("."):
                 continue
@@ -356,14 +365,16 @@ def _component_rows(items):
 
 def _manifest_override(d):
     """패키지가 스스로 매니페스트를 갖고 있으면 (최상위 json 에 screens/tokens/components) 그것을 쓴다.
-    반환: (screens, tokens, components, components_confirmed)."""
-    screens, tokens, comps, comps_ok = None, {}, [], False
+    반환: (screens, tokens, components, components_confirmed, target)."""
+    screens, tokens, comps, comps_ok, target = None, {}, [], False, None
     for n in sorted(os.listdir(d)):
         if not n.endswith(".json"):
             continue
         obj = util.read_json(os.path.join(d, n))
         if not isinstance(obj, dict):
             continue
+        if n == MANIFEST_NAME and obj.get("target") in util.TARGETS:
+            target = obj["target"]                          # 사람이 확정한 대상 — 감지보다 우선
         if isinstance(obj.get("components"), list) and not comps:
             comps = _component_rows(obj["components"])
             comps_ok = bool(obj.get("components_confirmed"))
@@ -374,16 +385,102 @@ def _manifest_override(d):
                 if isinstance(s, str):
                     screens.append({"id": slug(s), "file": None, "title": s})
                 elif isinstance(s, dict):
-                    f = s.get("file") or s.get("path") or s.get("html")
+                    ours = n == MANIFEST_NAME                  # 우리 매니페스트의 path 는 URL 경로, 남의 것은 파일 경로일 수 있다
+                    f = s.get("file") or (None if ours else s.get("path")) or s.get("html")
                     name = s.get("id") or s.get("name") or (os.path.splitext(os.path.basename(f))[0] if f else None)
                     if not name:
                         continue
-                    screens.append({"id": slug(str(name)), "file": f, "anchor": s.get("anchor"),
-                                    "title": str(s.get("title") or s.get("name") or name)})
+                    row = {"id": slug(str(name)), "file": f, "anchor": s.get("anchor"),
+                           "title": str(s.get("title") or s.get("name") or name)}
+                    if ours and isinstance(s.get("variants"), list) and s["variants"]:
+                        row["variants"] = [v for v in s["variants"] if isinstance(v, dict) and v.get("file")]
+                    if ours and s.get("path"):
+                        row["path"] = str(s["path"])
+                    screens.append(row)
         tk = obj.get("tokens")
         if isinstance(tk, dict) and n != MANIFEST_NAME:      # 우리 매니페스트의 tokens 는 요약(count·kinds)이지 정의가 아니다
             tokens.update(_flatten_tokens(tk))
-    return screens, tokens, comps, comps_ok
+    return screens, tokens, comps, comps_ok, target
+
+
+def detect_target(d, htmls):
+    """화면 HTML 에서 디자인 대상을 읽는다 → (target, evidence[]). 결정적이고, 근거가 없으면 mobile 이다.
+
+    강한 근거: 프레임 import 이름(ios-frame / browser-frame) · hint-size 폭. 약한 근거: @media 폭 질의.
+    강한 근거가 모바일·웹 양쪽이면 mixed. 약한 근거만 있으면 web (근거는 표에 보이고 사람이 덮는다)."""
+    mobile, web, evidence = False, False, []
+    for h in htmls:
+        html = util.read_text(os.path.join(d, h))
+        for m in _FRAME_RE.finditer(html):
+            kind = m.group(1).lower()
+            if kind in _MOBILE_FRAMES:
+                mobile = True
+            else:
+                web = True
+            evidence.append(f"{h}: frame `{kind}`")
+        for m in _HINT_SIZE_RE.finditer(html):
+            wpx = int(m.group(1))
+            if wpx <= 500:
+                mobile, ev = True, f"{h}: hint-size {wpx}px (mobile)"
+            elif wpx >= 900:
+                web, ev = True, f"{h}: hint-size {wpx}px (web)"
+            else:
+                ev = f"{h}: hint-size {wpx}px (ambiguous)"
+            if ev not in evidence:
+                evidence.append(ev)
+        if _MEDIA_RE.search(html):
+            evidence.append(f"{h}: @media width queries")
+            if not mobile:
+                web = True
+    target = "mixed" if mobile and web else "web" if web else "mobile"
+    if not evidence:
+        evidence.append("no frame / hint-size / @media evidence — defaulting to mobile")
+    return target, sorted(set(evidence))
+
+
+def group_variants(screens):
+    """파일 기반 화면 중 stem 이 브레이크포인트 접미로 끝나는 것들을 한 화면 + variants 로 묶는다. target 이 mobile 이 아닐 때만 부른다.
+
+    엄격 규칙: 상태(state)·섹션(anchor) 화면은 손대지 않는다 · 같은 base 에 서로 다른 접미가 2개 이상일 때만 묶는다 ·
+    base 가 다른 독립 화면의 id 와 겹치면 추측으로 합치지 않고 DesignError 로 사람에게 넘긴다."""
+    groups, order = {}, []
+    for s in screens:
+        if s.get("state") or s.get("anchor") or not s.get("file"):
+            continue
+        m = _VARIANT_RE.match(stem_of(s["file"]))
+        if not m:
+            continue
+        base = slug(m.group(1))
+        name = m.group(2).lower()
+        width = int(m.group(3)) if m.group(3) else _VARIANT_WIDTH.get(name)
+        if width is not None and width < 320:
+            continue
+        if base not in groups:
+            order.append(base)
+        groups.setdefault(base, []).append((name, width, s))
+    grouped = {b: vs for b, vs in groups.items() if len({n for n, _, _ in vs}) >= 2}
+    if not grouped:
+        return screens
+    plain = {s["id"] for s in screens if not any(s is v[2] for vs in grouped.values() for v in vs)}
+    clash = sorted(b for b in grouped if b in plain)
+    if clash:
+        raise DesignError("브레이크포인트 변형과 독립 화면의 id 가 겹친다 — 어느 쪽인지 사람이 정한다 (import_design screens=): " + ", ".join(clash))
+    out, done = [], set()
+    for s in screens:
+        hit = next((b for b, vs in grouped.items() if any(s is v[2] for v in vs)), None)
+        if hit is None:
+            out.append(s)
+            continue
+        if hit in done:
+            continue
+        done.add(hit)
+        vs = sorted(grouped[hit], key=lambda v: (-(v[1] or 0), v[0]))       # 넓은 변형이 기본
+        primary = vs[0][2]
+        tm = _VARIANT_RE.match(primary.get("title") or "")
+        title = tm.group(1) if tm else (primary.get("title") or _VARIANT_RE.match(stem_of(primary["file"])).group(1))
+        out.append({"id": hit, "file": primary["file"], "title": title.strip(" ._-"), "anchor": None,
+                    "variants": [{"name": n, "width": w, "file": v["file"]} for n, w, v in vs]})
+    return out
 
 
 def _flatten_tokens(obj, prefix=""):
@@ -428,8 +525,8 @@ def _css_tokens(text):
     return out
 
 
-def scan(root):
-    """design/ → 매니페스트 dict. 화면이 없으면 DesignError."""
+def scan(root, target=None):
+    """design/ → 매니페스트 dict. 화면이 없으면 DesignError. target: 이번 스캔에만 강제할 대상 (사람 확정 > 매니페스트 > 감지)."""
     d = util.design_dir(root)
     if not os.path.isdir(d):
         raise DesignError("design/ 가 없다 — 핸드오프 패키지를 먼저 가져온다")
@@ -448,7 +545,10 @@ def scan(root):
     images = [f for f in everything if f.lower().endswith(IMG_EXT)]
 
     # 화면
-    override, tokens, comps, comps_ok = _manifest_override(d)
+    override, tokens, comps, comps_ok, target_fixed = _manifest_override(d)
+    detected, evidence = detect_target(d, htmls)
+    forced = target
+    target = forced or target_fixed or detected
     screens = []
     if override:
         for s in override:
@@ -459,7 +559,11 @@ def scan(root):
             if not f:
                 cand = [h for h in htmls if slug(stem_of(h)) == s["id"]]
                 f = cand[0] if cand else None
-            screens.append({"id": s["id"], "file": f, "title": s["title"], "anchor": s.get("anchor")})
+            row = {"id": s["id"], "file": f, "title": s["title"], "anchor": s.get("anchor")}
+            for k in ("variants", "path"):
+                if s.get(k):
+                    row[k] = s[k]
+            screens.append(row)
     else:
         for h in htmls:
             stem = stem_of(h)
@@ -485,6 +589,8 @@ def scan(root):
             else:
                 title = _title_of(html, stem)
                 screens.append({"id": slug(stem), "file": h, "title": stem if "{{" in title else title, "anchor": None})
+        if target != "mobile":
+            screens = group_variants(screens)              # 모바일 대상은 이 코드를 타지 않는다
     if not screens:
         raise DesignError("화면(html)을 하나도 찾지 못했다 — 패키지에 화면 html 이 있어야 한다")
     ids = [s["id"] for s in screens]
@@ -527,6 +633,7 @@ def scan(root):
     return {"hash": util.tree_hash(d), "screens": screens, "tokens": tok, "boards": boards,
             "docs": docs, "chats": chats, "assets": assets, "files": len(everything),
             "components": comps, "components_confirmed": comps_ok,
+            "target": target, "target_source": "manifest" if (forced or target_fixed) else "detected", "target_evidence": evidence,
             "confirmed": os.path.isfile(os.path.join(d, MANIFEST_NAME))}
 
 
@@ -536,18 +643,26 @@ def _screen_rows(screens):
         if isinstance(s, str):
             rows.append({"id": slug(s), "title": s})
         elif isinstance(s, dict) and (s.get("id") or s.get("title")):
-            rows.append({"id": slug(str(s.get("id") or s["title"])), "title": str(s.get("title") or s["id"]),
-                         "file": s.get("file"), "anchor": s.get("anchor")})
+            row = {"id": slug(str(s.get("id") or s["title"])), "title": str(s.get("title") or s["id"]),
+                   "file": s.get("file"), "anchor": s.get("anchor")}
+            if isinstance(s.get("variants"), list) and s["variants"]:
+                row["variants"] = [{"name": str(v.get("name") or i), "width": v.get("width"), "file": v.get("file")}
+                                   for i, v in enumerate(s["variants"]) if isinstance(v, dict) and v.get("file")]
+            if s.get("path"):
+                row["path"] = str(s["path"])
+            rows.append(row)
     return rows
 
 
-def confirm_screens(root, screens=None, components=None):
-    """사람이 확정한 화면·컴포넌트 목록을 design/handoff.manifest.json 으로 쓴다.
-    screens [{id, title, file?, anchor?}] · components [{id, type, title, file?, anchor?, screen?}].
-    한쪽만 주면 다른 쪽은 기존 매니페스트의 것을 유지한다. 상세(내비게이션·문구·아이콘·모델)는 write_manifest 가 채운다."""
+def confirm_screens(root, screens=None, components=None, target=None):
+    """사람이 확정한 화면·컴포넌트 목록(과 디자인 대상)을 design/handoff.manifest.json 으로 쓴다.
+    screens [{id, title, file?, anchor?, variants?, path?}] · components [{id, type, title, file?, anchor?, screen?}] · target mobile|web|mixed.
+    안 준 것은 기존 매니페스트의 것을 유지한다. 상세(내비게이션·문구·아이콘·모델)는 write_manifest 가 채운다."""
     d = util.design_dir(root)
     if not os.path.isdir(d):
         raise DesignError("design/ 가 없다")
+    if target is not None and target not in util.TARGETS:
+        raise DesignError(f"target 은 {' | '.join(util.TARGETS)} 중 하나다")
     path = os.path.join(d, MANIFEST_NAME)
     prev = util.read_json(path) if os.path.isfile(path) else {}
     prev = prev if isinstance(prev, dict) else {}
@@ -556,7 +671,11 @@ def confirm_screens(root, screens=None, components=None):
         raise DesignError("화면 목록이 비었다")
     comps = _component_rows(components) if components else _component_rows(prev.get("components"))
     comps_ok = bool(components) or bool(prev.get("components_confirmed"))
-    util.write_json(path, {"version": MANIFEST_VERSION, "screens": rows, "components": comps, "components_confirmed": comps_ok})
+    doc = {"version": MANIFEST_VERSION, "screens": rows, "components": comps, "components_confirmed": comps_ok}
+    tgt = target or (prev.get("target") if prev.get("target") in util.TARGETS else None)
+    if tgt:
+        doc["target"] = tgt
+    util.write_json(path, doc)
     return rows
 
 
@@ -586,11 +705,15 @@ def write_manifest(root, m, detail):
     strs, ics = detail.get("strings") or [], detail.get("icons") or []
     screens = []
     for s in m["screens"]:
-        screens.append({"id": s["id"], "title": s["title"], "file": s.get("file"), "anchor": s.get("anchor"),
-                        "components": [c["id"] for c in comps if s["id"] in (c.get("screens") or [c.get("screen")])],
-                        "strings": [r["key"] for r in strs if r["screen"] == s["id"]],
-                        "icons": [i["name"] for i in ics if s["id"] in i["screens"]],
-                        "shots": s.get("shots") or []})
+        row = {"id": s["id"], "title": s["title"], "file": s.get("file"), "anchor": s.get("anchor"),
+               "components": [c["id"] for c in comps if s["id"] in (c.get("screens") or [c.get("screen")])],
+               "strings": [r["key"] for r in strs if r["screen"] == s["id"]],
+               "icons": [i["name"] for i in ics if s["id"] in i["screens"]],
+               "shots": s.get("shots") or []}
+        for k in ("variants", "path"):                       # 사람이 확정한 것 — 잃지 않는다
+            if s.get(k):
+                row[k] = s[k]
+        screens.append(row)
     for c in comps:
         if c["type"] in ("sheet", "modal", "popover"):
             c["children"] = [x["id"] for x in comps if x is not c and c["id"] in (x.get("screens") or [x.get("screen")])]
@@ -601,6 +724,7 @@ def write_manifest(root, m, detail):
         kinds[v["kind"]] = kinds.get(v["kind"], 0) + 1
     doc = {"version": MANIFEST_VERSION, "screens": screens, "components": comps,
            "components_confirmed": bool(m.get("components_confirmed")),
+           "target": m.get("target") or "mobile",
            "component_types": {t: sum(1 for c in comps if c["type"] == t) for t in sorted({c["type"] for c in comps})},
            "navigation": detail.get("navigation") or {}, "state": detail.get("state") or {},
            "entities": detail.get("entities") or {},

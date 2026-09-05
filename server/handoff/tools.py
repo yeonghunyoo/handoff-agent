@@ -157,7 +157,7 @@ def setup(root):
 
 CLAUDE_SECTION = """## handoff 워크플로
 
-이 레포는 Claude Design 핸드오프 패키지로 iOS · Android · backend 를 한 번에 만든다. **개발 작업 전에 반드시
+이 레포는 Claude Design 핸드오프 패키지로 iOS · Android · web · backend 를 한 번에 만든다. **개발 작업 전에 반드시
 MCP 도구 `status` 를 부르고 `next` 를 따른다.** 절차는 `/handoff` 스킬에 있다.
 
 - 순서: 패키지 등록 → 스펙·인프라 결정 → openapi → 계약 확정(사람) → 구현 → 검사 → 완료 승인(사람)
@@ -175,18 +175,22 @@ def _project_id(url):
     return m.group(1) if m else None
 
 
-def import_design(root, path=None, screens=None, components=None, url=None):
+def import_design(root, path=None, screens=None, components=None, url=None, target=None):
     cfg, st = _st(root)
     if flow.idx(st["phase"]) > flow.idx("review") and st["phase"] != "done":
         return _refuse(flow.require(st, "import", "spec", "api", "review", "done"))
+    if target is not None and target not in util.TARGETS:
+        return _refuse(f"target 은 {' | '.join(util.TARGETS)} 중 하나다.")
     try:
         if path and (leaks.is_sensitive_file(os.path.abspath(os.path.expanduser(path)).replace(os.sep, "/"))
                      or leaks.SENSITIVE_DIR_RE.search(os.path.abspath(os.path.expanduser(path)).replace(os.sep, "/"))):
             return _refuse("[S2] 민감 파일·디렉터리 경로다 — 디자인 패키지가 아니다. 가져오지 않았다.")
         src = design.import_package(root, path) if path else os.path.basename(util.design_dir(root))
         sec = leaks.sanitize_tree(util.design_dir(root)) if path else {"dropped": [], "masked": {}, "secrets": 0, "pii": 0}
-        if screens or components:
-            design.confirm_screens(root, screens, components)
+        if screens or components or target:
+            if target and not (screens or components) and not os.path.isfile(os.path.join(util.design_dir(root), design.MANIFEST_NAME)):
+                screens = design.scan(root, target=target)["screens"]     # target 만 덮을 때 — 그 대상으로 읽은 화면 목록을 확정한다
+            design.confirm_screens(root, screens, components, target)
         m = design.scan(root)
         dv = derive.write_all(root, m)          # 파생물(문구·아이콘·모델·전이·컴포넌트·내비·의도·규칙) — 지문에 든다
         detail = dv.pop("_detail", None) or {}
@@ -227,10 +231,18 @@ def import_design(root, path=None, screens=None, components=None, url=None):
         warn += ("\n! 오버레이 " + ", ".join(f"{c['id']}({c['type']})" for c in overlays)
                  + " 는 화면이 아니라 **컴포넌트**로 잡았다 — 사용자에게 보이고, 이름·타입을 고치거나 화면으로 승격하려면 "
                    "import_design(components=[{id,type,title,anchor}...]) 또는 screens=… 로 다시 부른다. 그대로면 확정 없이도 매니페스트에 든다.")
+    tgt = m.get("target") or "mobile"
+    warn += (f"\n디자인 대상: **{tgt}** ({'사람 확정' if m.get('target_source') == 'manifest' else '패키지에서 감지'}; 근거: "
+             + "; ".join(m.get("target_evidence") or [])[:300] + ") — 틀리면 import_design(target=mobile|web|mixed) 로 덮는다."
+             + (" 브레이크포인트 변형은 한 화면의 variants 로 묶었다: "
+                + ", ".join(f"{s['id']}[{'/'.join(v['name'] for v in s['variants'])}]" for s in m["screens"] if s.get("variants"))
+                if any(s.get("variants") for s in m["screens"]) else ""))
     hints = design.readme_hints(root, m)
     ctypes = " · ".join(f"{t} {n}" for t, n in sorted(dv["components"].items())) or "없음"
     return {"ok": True, "source": src, "confirmed": m.get("confirmed", False), "derived": dv,
-            "screens": [{"id": s["id"], "title": s["title"], "file": s["file"], "anchor": s.get("anchor")} for s in m["screens"]],
+            "target": tgt, "target_source": m.get("target_source"), "target_evidence": m.get("target_evidence") or [],
+            "screens": [{k: s.get(k) for k in ("id", "title", "file", "anchor", "variants", "path") if k in ("id", "title", "file", "anchor") or s.get(k)}
+                        for s in m["screens"]],
             "components": [{k: c.get(k) for k in ("id", "type", "title", "screen", "anchor", "handler") if c.get(k) is not None}
                            for c in comps],
             "navigation": {k: v for k, v in (detail.get("navigation") or {}).items() if k != "transitions"},
@@ -485,7 +497,7 @@ def precheck(root, role):
     return {"ok": True, "passed": ok, "blockers": e["blockers"],
             "consumption": {"used": cons["used"], "total": cons["total"], "rate": cons["rate"],
                             "unused": [i["id"] + " " + (i["const"] or i["label"]) for i in cons["items"] if not i["used"]]},
-            "hardcodes": e["hardcodes"][:30], "test_bypass": e["bypass"],
+            "hardcodes": e["hardcodes"][:30], "test_bypass": e["bypass"], "tokens": e.get("tokens") or [],
             "message": (("PRECHECK PASS. Next: report(role, report) [R1]." if ok else
                          "PRECHECK FAIL. Fix every blocker, rerun precheck [R1]. A report with an open blocker is refused "
                          "unless status=blocked.")
@@ -563,7 +575,7 @@ def verify(root):
     else:
         nxt = "build 로 재착수한다 (인계 자동 포함)."
     return {"ok": True, "verdict": result["verdict"], "score": result["score"], "threshold": result["threshold"],
-            "blockers": result["blockers"], "components": result["components"], "parity": result["parity"],
+            "blockers": result["blockers"], "components": result["components"], "parity": result["parity"], "parity_web": result.get("parity_web") or [],
             "proposals": proposals, "doc": doc, "screens_page": page, "checklist": cl,
             "message": (f"점수 {result['score']}/{result['threshold']} → {result['verdict']}. "
                         "checklist.markdown(투두 목록 + 분석)을 채팅에 그대로 보인다.\n"

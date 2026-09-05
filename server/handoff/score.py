@@ -56,7 +56,7 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
     drift = checks.skeleton_drift(root, cfg, role, version)
     cons = checks.consumption(tree, role_path, cfg, role, t)
     hard = checks.hardcodes(tree, role_path, cfg, role, t)
-    tokens = checks.token_usage(tree, role_path, cfg, t) if role != "backend" else []
+    tokens = checks.token_usage(tree, role_path, cfg, t, role=role) if role != "backend" else []
     bypass = checks.test_bypass(root, cfg, role)
     prov = checks.test_provenance(root, cfg, role)
     cov = checks.test_coverage(tree, role_path, cfg, role, t)
@@ -71,7 +71,7 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
     if drift:
         blockers.append("[C2] shared/generated/ differs from the server's output: "
                         + ", ".join(f"{why} {p}" for why, p in drift[:5]))
-    hits = checks.secret_hits(tree, role_path, cfg)
+    hits = checks.secret_hits(tree, role_path, cfg, role=role)
     if hits:
         blockers.append("[S1] secret-looking values in code — move to .env, commit only .env.example: "
                         + ", ".join(hits[:5]))
@@ -134,10 +134,12 @@ def evaluate(root, cfg, roles, version):
     cons_score = sum(cons) / len(cons) if cons else 100.0
     ts = [per[r]["tests"]["score"] for r in roles if per[r]["tests"]["score"] is not None]
     tests_score = sum(ts) / len(ts) if ts else None
-    apps = [r for r in roles if r in util.APPS]
-    gaps = checks.parity(per[apps[0]], per[apps[1]], approved) if len(apps) == 2 else []
+    mobile = [r for r in roles if r in util.MOBILE]
+    gaps = checks.parity(per[mobile[0]], per[mobile[1]], approved) if len(mobile) == 2 else []   # iOS ↔ Android — 그대로
+    web_gaps = (checks.parity_web(per["web"], [per[r] for r in mobile], approved, t.get("gesture_handlers"))
+                if "web" in roles and mobile else [])                                          # web ↔ 모바일 합집합 — web 이 있을 때만
     unapproved = sum(len(per[r]["unapproved_divergences"]) for r in roles)
-    parity_score = max(0.0, 100.0 - sc["divergence_penalty"] * (unapproved + len(gaps)))
+    parity_score = max(0.0, 100.0 - sc["divergence_penalty"] * (unapproved + len(gaps) + len(web_gaps)))
 
     w = dict(sc["weights"])
     if tests_score is None:
@@ -155,12 +157,12 @@ def evaluate(root, cfg, roles, version):
                 blockers.append(key)
     verdict = "pass" if not blockers and score >= sc["threshold"] else "loop"
     return {"roles": per, "score": round(score, 1), "threshold": sc["threshold"], "verdict": verdict,
-            "blockers": blockers, "parity": gaps,
+            "blockers": blockers, "parity": gaps, "parity_web": web_gaps,
             "components": {"consumption": round(cons_score, 1),
                            "tests": round(tests_score, 1) if tests_score is not None else None,
                            "parity": round(parity_score, 1),
                            "hardcodes": sum(len(per[r]["hardcodes"]) for r in roles),
-                           "unapproved_divergences": unapproved, "parity_gaps": len(gaps),
+                           "unapproved_divergences": unapproved, "parity_gaps": len(gaps) + len(web_gaps),
                            "tests_source": {r: per[r]["tests"]["source"] for r in roles}}}
 
 
@@ -181,7 +183,18 @@ def exceptions(result):
             items.append(f"[{r}] human check: {str(x)[:160]}")
     for g in result["parity"]:
         items.append(f"[{g['missing']}] parity gap {g['kind']} {g['id']} — only {g['done']} did it")
+    for g in result.get("parity_web") or []:
+        items.append(f"[{g['missing']}] parity gap (web↔mobile) {g['kind']} {g['id']} — only {g['done']} did it")
     return items
+
+
+def _web_gaps_for(result, role):
+    """web↔모바일 갭 중 이 역할이 빠뜨린 것. missing='mobile' 은 모바일 역할 전부가 빠뜨린 것이다."""
+    out = []
+    for g in result.get("parity_web") or []:
+        if g["missing"] == role or (g["missing"] == "mobile" and role in util.MOBILE):
+            out.append(f"{g['kind']} {g['id']} — {g['done']} did it (web↔mobile)")
+    return out
 
 
 def write_handoff(root, result, version):
@@ -195,7 +208,8 @@ def write_handoff(root, result, version):
             "unused": [i["id"] + " " + (i["const"] or i["label"]) for i in e["consumption"]["items"] if not i["used"]],
             "hardcodes": [f"{h['file']}:{h['line']} {h['kind']}" + (f" → use {h['token']}" if h.get("token") else "")
                           for h in e["hardcodes"]],
-            "parity": [f"{g['kind']} {g['id']} — {g['done']} did it" for g in result["parity"] if g["missing"] == r],
+            "parity": [f"{g['kind']} {g['id']} — {g['done']} did it" for g in result["parity"] if g["missing"] == r]
+            + _web_gaps_for(result, r),
             "untested": [i["id"] for i in e["test_coverage"]["items"] if not i["used"]][:20]
             if e["tests"]["source"] == "uncontracted" else [],
             "blockers": e["blockers"],

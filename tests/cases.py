@@ -132,6 +132,29 @@ def implement(root, roles=("backend", "ios", "android"), hardcode=False, skip_sc
             if tests:
                 w(os.path.join(t, "backend", "tests", "test_api.py"),
                   'def test_list():\n    assert client.get("/orders").status_code == 200\n')
+        elif role == "web":
+            screens = ["orderList", "orderDetail", "settings"]
+            if skip_screen and role == skip_screen[0]:
+                screens = [s for s in screens if s != skip_screen[1]]
+            body = "\n".join(f"const s{i} = Screens.{s}; const p{i} = ScreenPaths.{s};" for i, s in enumerate(screens))
+            body += "\nconst a = ApiRoutes.getOrders; const b = ApiRoutes.createOrder; const c = ApiRoutes.getOrdersByOrderId;"
+            body += "\nconst p = DesignTokens.Spacing.md;"
+            gen_s = open(os.path.join(t, "shared", "generated", "Strings.ts"), encoding="utf-8").read()
+            grp = None
+            for line in gen_s.splitlines():
+                mg = re.match(r"  (\w+): \{", line)
+                if mg:
+                    grp = mg.group(1)
+                ml = re.match(r"    (\w+): \"", line)
+                if ml and grp:
+                    body += f"\nconst s_{grp}_{ml.group(1)} = Strings.{grp}.{ml.group(1)};"
+            w(os.path.join(t, "apps/web/src", "main.tsx"), body + "\n")
+            css = ".card { background: var(--color-accent); gap: var(--spacing-lg); }\n"
+            if hardcode:
+                css += ".bad { color: #0A84FF; padding: 16px; }\n@media (max-width: 16px) { .x { top: 0 } }\n"
+            w(os.path.join(t, "apps/web/src", "main.module.css"), css)
+            if tests:
+                w(os.path.join(t, "apps/web/src", "main.test.ts"), "test('a', () => { expect(Screens.orderList).toBe('orderList') })\n")
         else:
             ext = "swift" if role == "ios" else "kt"
             screens = ["orderList", "orderDetail", "settings"]
@@ -388,8 +411,8 @@ def test_derive():
           and {"via": "skipOnboarding", "to": "home", "action": "go"} in nav["transitions"]
           and {"via": "openSettings", "to": "settings", "action": "go"} not in nav["transitions"], nav)
     man = json.load(open(os.path.join(d, design.MANIFEST_NAME), encoding="utf-8"))
-    check("derive: 매니페스트 v2 상세 — 화면별 컴포넌트·문구·아이콘 · 내비 · state · 모델 · 요약",
-          man["version"] == 2 and man["navigation"]["entry"] == "onboarding" and "skipOnboarding" in man["screens"][0]["components"]
+    check("derive: 매니페스트 v3 상세 — 화면별 컴포넌트·문구·아이콘 · 내비 · state · 모델 · 요약 · target",
+          man["version"] == 3 and man["target"] == "mobile" and man["navigation"]["entry"] == "onboarding" and "skipOnboarding" in man["screens"][0]["components"]
           and "onboarding.geonneottwigi" in man["screens"][0]["strings"] and "tabHome" in man["screens"][1]["icons"] + man["screens"][0]["icons"] + man.get("icons", {}).get("names", [])
           and man["state"]["tab"] == "home" and man["entities"]["PRESETS"] == {"count": 1, "fields": ["desc", "id", "name", "volumes"]}
           and man["strings"]["count"] == dv["strings"] and man["tokens"]["count"] == 3 and man["components_confirmed"] is False
@@ -943,9 +966,150 @@ def test_security():
     check("packaging: 리포에 개인 경로·개인정보·시크릿·민감 파일 없음", not bad, bad)
 
 
+def make_web_package(d, clash=False, media=True):
+    """웹 내보내기 모양 — 브레이크포인트별 아트보드 파일 + @media. 프레임 없음."""
+    os.makedirs(d, exist_ok=True)
+    css = ":root{--color-accent:#0A84FF;--color-bg:#FFFFFF;--spacing-md:16px;--spacing-lg:24px;--radius-pill:999px}"
+    css += "@media (max-width: 768px){.grid{display:block}}" if media else ""
+    for fn, title in (("home-desktop.html", "Home"), ("home-mobile.html", "Home"), ("settings.html", "Settings")) + ((("home.html", "Home"),) if clash else ()):
+        with open(os.path.join(d, fn), "w") as f:
+            f.write(f"<!doctype html><html><head><title>{title}</title><style>{css}</style></head><body><h1>{title}</h1>"
+                    f"<div class=\"grid\" style=\"display:flex;gap:var(--spacing-md)\"><button style=\"background:var(--color-accent)\">Go</button></div></body></html>")
+    return d
+
+
+def test_web_role():
+    spec = {**SPEC, "platforms": ["ios", "android", "web"], "stack": {**SPEC["stack"], "web_project": "next-app"}}
+    root = to_locked(make_repo(), spec=spec)
+    cfg = util.load_config(root)
+    check("web: 기본 역할 경로·검증 명령·착수 순서", cfg["roles"]["web"] == "apps/web" and cfg["verify"]["commands"]["web"] == []
+          and cfg["dispatch"]["order"][-1] == "web", cfg["dispatch"])
+    m = design.scan(root)
+    files = gen.expected(root, cfg, 1, m, api.validate(OPENAPI))
+    names = sorted(os.path.basename(f) for f in files)
+    check("web: 생성 상수 TS 5종 + tokens.css (Swift·Kotlin 은 그대로)",
+          all(f"{k}.ts" in names for k in ("ApiRoutes", "Screens", "DesignTokens", "Strings")) and "tokens.css" in names
+          and names.count("Screens.swift") == 1 and names.count("Screens.kt") == 1 and "Icons.ts" not in names, names)
+    ts = files["shared/generated/Screens.ts"]
+    check("web: Screens.ts 에 id 상수 + ScreenPaths", 'orderList: "orderList",' in ts and "export const ScreenPaths" in ts
+          and 'orderList: "/orderList",' in ts, ts)
+    css = files["shared/generated/tokens.css"]
+    check("web: tokens.css 는 토큰 키의 - 표기 + px", "--color-accent: #0A84FF;" in css and "--spacing-md: 16px;" in css and css.startswith("/*"), css)
+    tk = files["shared/generated/DesignTokens.ts"]
+    check("web: DesignTokens.ts 중첩·as const", "export const DesignTokens = {" in tk and "Spacing: {" in tk and "md: 16," in tk
+          and 'accent: "#0A84FF",' in tk and "} as const;" in tk, tk)
+    rt = files["shared/generated/ApiRoutes.ts"]
+    check("web: ApiRoutes.ts", 'getOrdersByOrderId: { method: "GET", path: "/orders/{orderId}" },' in rt, rt)
+    check("web: 결정적", gen.expected(root, cfg, 1, m, api.validate(OPENAPI)) == files)
+    r = tools.build(root)
+    check("web: build 4 역할 · web 은 맨 뒤", r["ok"] and set(r["prompts"]) == {"backend", "ios", "android", "web"} and r["dispatch"]["order"][-1] == "web", r["dispatch"])
+    p = r["prompts"]["web"]
+    check("web: 착수 프롬프트", "tsc --noEmit" in p and "tokens.css" in p and "Screens.ts" in p and "Project structure: next-app" in p
+          and "Design target" in p and "ONE centered column" in p and "<style> blocks" in p, p[:3000])
+    check("web: 모바일 프롬프트는 web 문구 없음", "tokens.css" not in r["prompts"]["ios"] and "centered column" not in r["prompts"]["android"])
+    check("web: 워크트리에 tokens.css", os.path.isfile(os.path.join(wt(root, "web"), "shared/generated/tokens.css")))
+    implement(root, roles=("backend", "ios", "android", "web"), hardcode=True, skip_screen=("web", "settings"))
+    pre = tools.precheck(root, "web")
+    e = pre
+    check("web: precheck — TS 소비 + CSS var() 토큰 소비", pre["consumption"]["rate"] < 100.0
+          and "color.accent" in e["tokens"] and "spacing.lg" in e["tokens"] and "spacing.md" in e["tokens"], (pre["consumption"]["rate"], e["tokens"]))
+    kinds = sorted((h["file"].rsplit(".", 1)[-1], h["kind"]) for h in pre["hardcodes"])
+    check("web: CSS 의 hex·px 하드코딩 검출, @media 는 면제", ("css", "hex-color") in kinds and ("css", "raw-dimension") in kinds
+          and not any("@media" in h["text"] for h in pre["hardcodes"]), pre["hardcodes"])
+    pre_ios = tools.precheck(root, "ios")
+    check("web: iOS 검사는 CSS 를 안 읽는다", all(not h["file"].endswith(".css") for h in pre_ios["hardcodes"]) and pre_ios["consumption"]["rate"] == 100.0, pre_ios["hardcodes"])
+    util.write_config(root, {**util.DEFAULTS, "score": {**util.DEFAULTS["score"], "threshold": 99}})   # loop 을 강제해 인계를 본다
+    for role in ("backend", "ios", "android"):
+        assert tools.report(root, role, report())["ok"]
+    r = tools.report(root, "web", report())
+    v = r["verify"]
+    check("web: 임계 99 → loop", v["verdict"] == "loop", v["components"])
+    check("web: iOS↔Android 파리티는 그대로 비어 있고 web↔모바일 갭이 따로", v["parity"] == [] and any(g["missing"] == "web" and "settings" in g["id"] and g["pair"] == "web↔mobile" for g in v["parity_web"]), v["parity_web"])
+    check("web: 체크리스트에 web↔모바일 절", "**파리티 (web ↔ 모바일)**" in v["checklist"]["markdown"] and "iOS ↔ Android" not in v["checklist"]["markdown"], v["checklist"]["markdown"][-1200:])
+    ho = util.read_json(util.ho(root, util.HANDOFF))
+    check("web: 인계에 web↔mobile 갭 — web 은 빠진 화면, 모바일 둘은 web 만 쓴 토큰 (iOS↔Android 갭은 없음)",
+          ho and any("settings" in x and "web↔mobile" in x for x in ho["roles"]["web"]["parity"])
+          and ho["roles"]["ios"]["parity"] == ho["roles"]["android"]["parity"] == ["token spacing.lg — web did it (web↔mobile)"], ho and ho["roles"])
+    st = tools.status(root)
+    check("web: 요약 표에 디자인 대상·web 프로젝트", "| 디자인 대상 | mobile" in st["summary"]["markdown"] and "| web 프로젝트 | next-app |" in st["summary"]["markdown"], st["summary"]["markdown"])
+    # web 만 — 파리티 없음 · 모바일 디자인 경고
+    root2 = to_locked(make_repo(), spec={**SPEC, "platforms": ["web"], "stack": {"backend": "fastapi"}})
+    r = tools.build(root2)
+    check("web-only: backend + web", set(r["prompts"]) == {"backend", "web"} and "Project structure: existing" in r["prompts"]["web"])
+    implement(root2, roles=("backend", "web"))
+    assert tools.report(root2, "backend", report())["ok"]
+    v = tools.report(root2, "web", report())["verify"]
+    check("web-only: 파리티 갭 0 · pass", v["verdict"] == "pass" and v["parity"] == [] and v["parity_web"] == [], v["components"])
+    check("web-only: 요약 표 경고 (모바일 디자인 → web)", "플랫폼과 어긋난다" in tools.status(root2)["summary"]["markdown"])
+    # 모바일만 — web 흔적 없음 (회귀)
+    root3 = to_locked(make_repo())
+    r = tools.build(root3)
+    files3 = gen.expected(root3, util.load_config(root3), 1, design.scan(root3), api.validate(OPENAPI))
+    check("회귀: 모바일만이면 .ts/.css 없음 · web 프롬프트 없음", not any(f.endswith((".ts", ".css")) for f in files3) and "web" not in r["prompts"], sorted(files3))
+    check("회귀: spec 에 web 을 안 고르면 platforms 그대로", util.read_spec(root3)["platforms"] == ["ios", "android"])
+    check("web: stack.web_project 검증", tools.spec_save(make_repo_spec_root(), {"platforms": ["web"], "stack": {"backend": "x", "web_project": "svelte"}})["draft"])
+
+
+def make_repo_spec_root():
+    root = make_repo()
+    tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
+    return root
+
+
+def test_target_and_variants():
+    # 모바일 패키지(파일 여러 개, 프레임 없음) — 근거 없음 → mobile
+    root = make_repo()
+    r = tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
+    check("target: 근거 없으면 mobile", r["target"] == "mobile" and r["target_source"] == "detected" and any("defaulting" in e for e in r["target_evidence"]), r["target_evidence"])
+    # 번들 (ios-frame + hint-size 402) → mobile, 상태 화면은 묶기 대상이 아니다
+    root_b = make_repo()
+    r = tools.import_design(root_b, make_bundle(os.path.join(os.path.dirname(root_b), "forest.html"), states=("isOnboarding", "isHomeMobile", "isHomeDesktop")))
+    check("target: ios-frame 번들은 mobile · 상태 이름에 Mobile/Desktop 이 있어도 안 묶는다",
+          r["target"] == "mobile" and [s["id"] for s in r["screens"]] == ["onboarding", "homeMobile", "homeDesktop"], r["screens"])
+    # 웹 패키지 — @media → web, home-desktop/home-mobile 이 home 하나로
+    root_w = make_repo()
+    r = tools.import_design(root_w, make_web_package(os.path.join(os.path.dirname(root_w), "web")))
+    ids = [s["id"] for s in r["screens"]]
+    home = next(s for s in r["screens"] if s["id"] == "home")
+    check("target: @media 로 web · 변형 묶임 (넓은 쪽이 기본 파일)", r["target"] == "web" and ids == ["home", "settings"]
+          and home["file"] == "home-desktop.html" and [v["name"] for v in home["variants"]] == ["desktop", "mobile"]
+          and home["variants"][0]["width"] == 1280 and "variants" not in next(s for s in r["screens"] if s["id"] == "settings"), r["screens"])
+    check("target: 응답 문구에 변형", "home[desktop/mobile]" in r["message"], r["message"][-400:])
+    m = design.scan(root_w)
+    check("target: 매니페스트 없이도 결정적", design.scan(root_w)["screens"] == m["screens"] and m["target_source"] == "detected")
+    # 사람이 mobile 로 덮으면 묶지 않는다
+    r = tools.import_design(root_w, target="mobile")
+    check("target: 사람이 mobile 로 덮으면 3화면", r["target"] == "mobile" and r["target_source"] == "manifest"
+          and [s["id"] for s in r["screens"]] == ["homeDesktop", "homeMobile", "settings"], r["screens"])
+    man = util.read_json(os.path.join(root_w, "design", design.MANIFEST_NAME))
+    check("target: 매니페스트 v3 에 target", man["version"] == 3 and man["target"] == "mobile", man.get("target"))
+    # 다시 web 으로 + 라우트 확정 → 재등록해도 variants·path 가 남는다
+    r = tools.import_design(root_w, screens=[{"id": "home", "title": "Home", "file": "home-desktop.html", "path": "/",
+                                              "variants": [{"name": "desktop", "width": 1280, "file": "home-desktop.html"},
+                                                           {"name": "mobile", "width": 390, "file": "home-mobile.html"}]},
+                                             {"id": "settings", "title": "Settings", "file": "settings.html", "path": "/settings"}], target="web")
+    r = tools.import_design(root_w)                       # 확정 뒤 재등록 (path 없이)
+    home = next(s for s in r["screens"] if s["id"] == "home")
+    check("target: 확정한 variants·path 가 재등록 뒤에도 남는다", r["target"] == "web" and home.get("path") == "/" and len(home.get("variants") or []) == 2
+          and next(s for s in r["screens"] if s["id"] == "settings")["path"] == "/settings", r["screens"])
+    man = util.read_json(os.path.join(root_w, "design", design.MANIFEST_NAME))
+    check("target: write_manifest 도 variants·path 보존", man["screens"][0].get("path") == "/" and len(man["screens"][0].get("variants") or []) == 2, man["screens"][0])
+    tools.spec_save(root_w, {**SPEC, "platforms": ["web"], "stack": {"backend": "fastapi", "web_project": "vite-react"}})
+    tools.api_submit(root_w, OPENAPI)
+    ts = gen.expected(root_w, util.load_config(root_w), 1, design.scan(root_w), api.validate(OPENAPI))["shared/generated/Screens.ts"]
+    check("target: ScreenPaths 에 확정한 경로", 'home: "/",' in ts and 'settings: "/settings",' in ts, ts)
+    # 겹침 — home.html 과 home-desktop.html 이 같이 있으면 추측하지 않는다
+    root_c = make_repo()
+    r = tools.import_design(root_c, make_web_package(os.path.join(os.path.dirname(root_c), "webc"), clash=True))
+    check("target: 변형과 독립 화면 id 겹침은 거부", not r["ok"] and "겹친다" in r["message"], r["message"])
+    # derived/ 안의 html 은 화면이 아니다
+    w(os.path.join(root, "design", "derived", "preview-of-something.html"), "<html><title>X</title></html>")
+    check("scan: derived/ 의 html 은 화면으로 잡지 않는다", [s["id"] for s in design.scan(root)["screens"]] == ["orderDetail", "orderList", "settings"], design.scan(root)["screens"])
+
+
 TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
-         test_screens_page, test_hooks, test_security]
+         test_screens_page, test_hooks, test_security, test_web_role, test_target_and_variants]
 
 
 def main():

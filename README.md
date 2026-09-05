@@ -1,6 +1,6 @@
 # handoff
 
-**Claude Design 핸드오프 패키지 하나로 iOS · Android · backend 를 한 번에 만드는 에이전트.**
+**Claude Design 핸드오프 패키지 하나로 iOS · Android · web · backend 를 한 번에 만드는 에이전트.**
 기억할 명령은 `/handoff` 하나다.
 
 ## 무엇을 해주나
@@ -8,7 +8,7 @@
 디자인은 [claude.ai/design](https://claude.ai/design) 에서 끝낸다 — 거기서 루프를 돌고, 다 됐으면 **핸드오프
 패키지**(화면 HTML · 개발 문서 · 토큰 · 스크린샷)를 내보낸다. 이 도구는 그 패키지를 **프론트 계약**으로 받고,
 사람이 스택·인프라를 결정하면 화면에서 **백엔드 계약(openapi.yaml)** 을 초안한다. 사람이 계약을 확정하면
-세 에이전트가 각자 격리된 git 워크트리에서 구현하고(기본은 한 번에 하나 — 한 기기에서 툴체인이 코어를 나눠 쓰면 모두 느려진다),
+역할별 에이전트(backend · ios · android · web — 스펙에서 고른 것만)가 각자 격리된 git 워크트리에서 구현하고(기본은 한 번에 하나 — 한 기기에서 툴체인이 코어를 나눠 쓰면 모두 느려진다),
 서버가 코드·diff 를 **직접 재서** 계약대로 된 것만
 사람 승인 뒤 main 에 머지한다.
 
@@ -73,7 +73,7 @@
 
 - **소비** — 역할별 계약 항목(라우트 `API-xx` · 화면 `SCR-xx`) 소비율 − 하드코딩 감점(hex 색 · 토큰에 이름 있는 치수 · 라우트 원문)
 - **테스트** — 설정된 `verify.commands` 를 서버가 재실행한 결과 > 자기 신고. 계약 상수를 하나도 안 건드린 스위트는 증거가 아니라 제외
-- **파리티** — 미승인 발산 + 실측 갭(iOS↔Android 소비 항목·토큰 집합 차)
+- **파리티** — 미승인 발산 + 실측 갭(iOS↔Android 소비 항목·토큰 집합 차). web 이 있으면 web↔모바일(iOS·Android 중 하나라도 한 것의 합집합) 갭을 따로 한 번 더 잰다 — 스와이프류 `gesture` 핸들러는 web 쪽에서 자동 면제
 - **블로커** — `design/`·`api/` 변경, 생성 상수 드리프트, 담당 밖 쓰기, 본선 오염, 시크릿(코드·민감 파일·커밋 이력), 빌드 실패
 
 ## 핸드오프 패키지 — 무엇을 읽나
@@ -88,7 +88,7 @@
 
 화면이 0개면 등록을 거부한다. 토큰이 0개면 경고만(하드코딩 검출 비활성).
 
-### 매니페스트 — `design/handoff.manifest.json` (v2)
+### 매니페스트 — `design/handoff.manifest.json` (v3)
 
 사람이 화면(또는 컴포넌트)을 확정하면 생기고, 그 뒤로는 `import_design` 마다 서버가 상세를 다시 채운다 — 사람이 정한 것
 (화면 목록 · `components_confirmed` 일 때 컴포넌트의 id·type·title)만 남기고 나머지는 `design/` 에서 결정적으로 재계산한다
@@ -96,7 +96,8 @@
 
 | 키 | 내용 |
 |---|---|
-| `screens[]` | `id · title · file · anchor` + 그 화면의 `components[]`(id) · `strings[]`(키) · `icons[]`(이름) · `shots[]` |
+| `target` | 디자인 대상 `mobile` / `web` / `mixed` — 서버가 프레임 import 이름 · `hint-size` 폭 · `@media` 로 감지(근거 없으면 mobile), 사람이 `import_design(target=)` 로 덮는다. web/mixed 면 브레이크포인트 변형 파일(`home-desktop.html` · `home-mobile.html`)이 한 화면의 `variants[]` 로 묶인다 |
+| `screens[]` | `id · title · file · anchor` (+ web: `variants[]` · `path` URL 경로) + 그 화면의 `components[]`(id) · `strings[]`(키) · `icons[]`(이름) · `shots[]` |
 | `components[]` | 상호작용 요소를 **타입**으로 분류 — `sheet` `modal` `popover`(오버레이: `anchor`=state 키 · `style` 변수 · `open[]`/`close[]` 핸들러 · `children[]` · `strings[]` · `icons[]`) · `tab`(`target`) · `button`(`handler` · `sets[]` · `icon`) · `toggle` · `input`/`slider`(`bind` · `placeholder` · `min`/`max`) · `item`(반복 항목: `list`) · `gesture`(`events[]`). 공통: `screen`(귀속) · `screens[]` · `uses` · `file` |
 | `components_confirmed` · `component_types` | 사람이 컴포넌트를 확정했는지 · 타입별 개수 |
 | `navigation` | `entry`(진입 화면) · `tabs{핸들러: 화면}` · `transitions[{via, to, action}]` — action 은 `go`/`leave`(화면) · `open`/`close`/`toggle`(오버레이) |
@@ -145,7 +146,7 @@ Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이�
 |---|---|
 | 요약 표 · 정합성 체크리스트 (채팅) | `status` · `api_submit` · `verify` · `ship` 응답의 `summary.markdown` · `checklist.markdown` — 터미널은 `run.py status --root .` |
 | 계약 요약 · 검사 결과 (텍스트) | `docs/handoff-plan.md` · `docs/handoff-verify.md` |
-| 화면 대조 (디자인 원본 \| iOS \| Android) | `docs/handoff-screens/index.html` — 에이전트가 `<워크트리>/.handoff/shots/<화면id>.png` 를 남기면 |
+| 화면 대조 (디자인 원본 \| iOS \| Android \| web) | `docs/handoff-screens/index.html` — 에이전트가 `<워크트리>/.handoff/shots/<화면id>.png` 를 남기면 |
 
 승인 채널은 elicitation 과 터미널(`run.py review|ship --root .`) 둘뿐이다 — 에이전트가 승인을 위조할 수 없다.
 

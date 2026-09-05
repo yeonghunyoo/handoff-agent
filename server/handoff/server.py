@@ -63,25 +63,28 @@ def setup() -> dict:
 
 
 @mcp.tool()
-def import_design(path: str = "", screens: list | None = None, components: list | None = None, url: str = "") -> dict:
+def import_design(path: str = "", screens: list | None = None, components: list | None = None, url: str = "",
+                  target: str = "") -> dict:
     """① Claude Design 산출물을 design/ 로 가져오고 화면·컴포넌트·토큰·문서를 발견한다. path: 핸드오프 zip/tar.gz ·
     standalone HTML 내보내기(번들을 펼친다) · 폴더. 응답의 화면 후보와 컴포넌트(타입: sheet·modal·popover·tab·
     button·toggle·input·slider·item·gesture) 목록을 사용자에게 보여 확정받고, 고칠 게 있으면 path 없이
-    screens=[{id,title,file,anchor}] · components=[{id,type,title,anchor}] 로 다시 부른다. 확정되면
+    screens=[{id,title,file,anchor,variants?,path?}] · components=[{id,type,title,anchor}] 로 다시 부른다. 확정되면
     design/handoff.manifest.json 에 화면·컴포넌트·내비게이션·state·모델·문구·아이콘·토큰 상세가 실린다.
+    target: 디자인 대상 mobile|web|mixed — 서버가 패키지에서 감지해 응답 `target`·`target_evidence` 로 보이고, 틀리면 이 인자로 덮는다
+    (web/mixed 면 "Home – Desktop / Home – Mobile" 같은 브레이크포인트 변형이 한 화면의 variants 로 묶인다).
     url: claude.ai/design 프로젝트 링크 (링크로 받았을 때 — 요약 표에 프로젝트 id·url 로 보인다).
     done 상태에서 부르면 새 사이클을 연다."""
-    return _out(tools.import_design(ROOT, path or None, screens, components, url or None))
+    return _out(tools.import_design(ROOT, path or None, screens, components, url or None, target or None))
 
 
 @mcp.tool()
 def spec_save(spec: dict) -> dict:
-    """② 스펙 저장. 필수: platforms[ios|android], stack.backend, infra.scale(small|medium_plus — infra.mau/dau 숫자를 주면
+    """② 스펙 저장. 필수: platforms[ios|android|web], stack.backend, infra.scale(small|medium_plus — infra.mau/dau 숫자를 주면
     서버가 정한다. **규모가 먼저다** — 규모가 저장돼야 infra_options 에 그 규모의 조합 4~5개가 실린다),
     infra.db/auth/hosting (결정만 기록 — infra_options 의 조합 id 를 infra.combo 로 주면 db/auth/hosting/cost 가 채워진다).
     infra.pricing {checked: YYYY-MM-DD, combos: {id: {small, medium_plus, sources[]}}} 는 그날 infra_options.services 의 요금 페이지(후보 것만)에서
     읽은 값 — 표를 보이기 전에 저장한다.
-    선택: stack.ios_project, stack.android_project, infra.mau, infra.dau, infra.combo, infra.cost, infra.env_vars[], infra.notes,
+    선택: stack.ios_project, stack.android_project, stack.web_project(next-app|vite-react|existing), infra.mau, infra.dau, infra.combo, infra.cost, infra.env_vars[], infra.notes,
     divergences[] (승인된 플랫폼 차이 주제). 필수가 다 차기 전까지 부분 저장으로 누적된다 — 답을 받을 때마다 그 항목만 넘겨도 된다."""
     return _out(tools.spec_save(ROOT, spec))
 

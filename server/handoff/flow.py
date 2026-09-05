@@ -22,6 +22,7 @@ LABELS = {
     "done": "완료",
 }
 HUMAN = {"review", "ship"}
+WEB_PROJECTS = ("next-app", "vite-react", "existing")   # stack.web_project — v1 은 이 셋 (Svelte/Vue 는 검사 확장자·플레이북이 더 필요)
 
 
 def idx(p):
@@ -33,7 +34,7 @@ def next_action(st):
     if p == "import":
         return "import_design(path) — Claude Design 에서 내보낸 zip/폴더 경로를 넘긴다 (레포 루트에 두면 status.candidates 가 찾는다)"
     if p == "spec":
-        return "spec_save(spec) — platforms · stack.backend · infra(db/auth/hosting/env) 를 사람에게 묻고 저장한다"
+        return "spec_save(spec) — platforms(ios/android/web) · stack.backend · infra(db/auth/hosting/env) 를 사람에게 묻고 저장한다"
     if p == "api":
         return "api_submit(openapi) — design/ 의 화면·문서를 읽고 각 화면이 필요로 하는 데이터로 openapi.yaml 을 초안한다"
     if p == "review":
@@ -56,7 +57,10 @@ def spec_problems(spec):
         return ["spec 이 객체가 아니다"]
     plats = [str(p).lower() for p in (spec.get("platforms") or [])]
     if not any(p in util.APPS for p in plats):
-        out.append("platforms 에 ios/android 중 하나 이상이 필요하다")
+        out.append("platforms 에 ios/android/web 중 하나 이상이 필요하다")
+    stack0 = spec.get("stack") if isinstance(spec.get("stack"), dict) else {}
+    if "web" in plats and stack0.get("web_project") and stack0["web_project"] not in WEB_PROJECTS:
+        out.append(f"stack.web_project '{stack0['web_project']}' 는 지원하지 않는다 ({' | '.join(WEB_PROJECTS)})")
     stack = spec.get("stack") if isinstance(spec.get("stack"), dict) else {}
     if not stack.get("backend"):
         out.append("stack.backend 가 비었다 (사람이 고른다 — 후보를 비교해 보이고 선택을 받는다)")
