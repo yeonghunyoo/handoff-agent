@@ -2,8 +2,13 @@
 
 review · ship 은 elicitation(클라이언트가 사람에게 직접 띄우는 입력)으로만 통과한다. 미지원 클라이언트면
 자동 승인으로 강등하지 않고 사람이 터미널에서 칠 명령을 돌려준다.
+
+승인 창을 못 띄우는 클라이언트(비대화형·브리지 세션)는 예외를 내는 대신 사람 없이 cancel/decline 을 즉답한다.
+그것을 "사람이 반려했다"로 기록하면 이력에 가짜 반려가 쌓이므로, 사람이 실제로 답한 것만 결정으로 친다:
+accept(폼 제출) → 결정 · cancel → 채널 없음 · decline 이 AUTO_REPLY_SECONDS 안에 사유 없이 오면 채널 없음.
 """
 import os
+import time
 
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import BaseModel
@@ -30,14 +35,31 @@ class _Approval(BaseModel):
     reason: str = ""
 
 
+# 이 시간 안에 사유 없는 decline 이 오면 사람이 읽고 누른 것이 아니라 클라이언트 자동 응답으로 본다.
+AUTO_REPLY_SECONDS = 5.0
+
+NO_CHANNEL = {
+    "error": "승인 창(elicitation)을 띄우지 못했다",
+    "cancel": "승인 창이 닫혔거나 클라이언트가 띄우지 못해 자동 취소됐다",
+    "fast_decline": f"승인 창 응답이 {AUTO_REPLY_SECONDS:g}초 안에 사유 없이 돌아왔다 — 클라이언트 자동 응답으로 본다",
+}
+
+
 async def _elicit(ctx, message):
+    """사람이 실제로 답한 것만 {"approved", "reason"} 으로 돌려준다.
+    승인 채널이 없는 경우는 {"no_channel": 이유} — 호출자가 반려로 기록하지 않고 터미널 명령을 안내한다."""
+    t0 = time.monotonic()
     try:
         r = await ctx.elicit(message=message, schema=_Approval)
     except Exception:
-        return None
-    if getattr(r, "action", None) != "accept" or getattr(r, "data", None) is None:
-        return {"approved": False, "reason": "사람이 취소/거절했다"}
-    return {"approved": r.data.approved, "reason": r.data.reason}
+        return {"no_channel": NO_CHANNEL["error"]}
+    action = getattr(r, "action", None)
+    data = getattr(r, "data", None)
+    if action == "accept" and data is not None:
+        return {"approved": bool(data.approved), "reason": data.reason or ""}
+    if action == "decline" and time.monotonic() - t0 >= AUTO_REPLY_SECONDS:
+        return {"approved": False, "reason": "사람이 거절했다 (elicitation decline)"}
+    return {"no_channel": NO_CHANNEL["cancel" if action != "decline" else "fast_decline"]}
 
 
 async def _approve_then(ctx, run):
@@ -45,7 +67,11 @@ async def _approve_then(ctx, run):
     if not pre.get("pending_human"):
         return _out(pre)
     decision = await _elicit(ctx, pre["approval_prompt"])
-    if decision is None:
+    if "no_channel" in decision:
+        pre = dict(pre, no_channel=decision["no_channel"])
+        pre["message"] = (f"{decision['no_channel']}. 반려로 기록하지 않았다.\n"
+                          "이 클라이언트에서는 승인할 수 없다 — 사람이 대화형 세션에서 다시 부르거나 아래 명령을 터미널에서 직접 실행한다.\n\n"
+                          + pre["message"])
         return _out(pre)
     return _out(run(lambda m, i: decision))
 

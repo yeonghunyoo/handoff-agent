@@ -149,6 +149,8 @@ Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이�
 | 화면 대조 (디자인 원본 \| iOS \| Android \| web) | `docs/handoff-screens/index.html` — 에이전트가 `<워크트리>/.handoff/shots/<화면id>.png` 를 남기면 |
 
 승인 채널은 elicitation 과 터미널(`run.py review|ship --root .`) 둘뿐이다 — 에이전트가 승인을 위조할 수 없다.
+승인 창을 못 띄우는 클라이언트(비대화형·브리지 세션)가 사람 없이 cancel 이나 즉답 decline 을 보내면 서버는 그것을 반려로
+기록하지 않고 "채널 없음"으로 터미널 명령을 안내한다 — 사람이 폼을 제출하거나 읽고 누른 decline 만 결정이다.
 
 ## 보안 — 민감 파일 · 개인정보
 

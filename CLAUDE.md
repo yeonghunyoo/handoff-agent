@@ -41,7 +41,7 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 ```
 
 - **`tools.py` 가 유일한 진입 API**다. MCP 와 CLI 가 같은 함수를 부르므로 도구를 추가·수정하면 `server.py` 의 래퍼와 `tests/cases.py` 도 같이 고친다.
-- **승인은 `approver` 콜백**으로만 통과한다. `tools.review/ship(root, approver=None)` 은 approver 가 없으면 `pending_human` + `approval_prompt` 만 돌려준다. MCP 는 elicitation, CLI 는 tty 로 콜백을 채운다. 승인 도구에 approve 류 인자를 추가하지 않는다.
+- **승인은 `approver` 콜백**으로만 통과한다. `tools.review/ship(root, approver=None)` 은 approver 가 없으면 `pending_human` + `approval_prompt` 만 돌려준다. MCP 는 elicitation, CLI 는 tty 로 콜백을 채운다. 승인 도구에 approve 류 인자를 추가하지 않는다. elicitation 의 cancel · 즉답 decline(`server.AUTO_REPLY_SECONDS` 안, 사유 없음)은 사람 답이 아니라 창 없는 클라이언트(비대화형·브리지 세션)의 자동 응답으로 보고 반려로 기록하지 않는다 — 응답에 `no_channel` 과 터미널 명령을 싣는다. `tests/mcp_cases.py` 가 cancel · 즉답 decline · 사람 decline · 폼 반려 · 승인 다섯 경로를 돈다.
 - **단계는 `flow.py`** 의 `PHASES` 순서이고, `flow.current()` 가 매번 저장 상태를 실측과 대조한다 (design/+api/ 트리 해시 `util.fingerprint` 가 잠금 지문과 다르면 review 로 강등). 도구는 `flow.require(st, *phases)` 로 단계를 강제한다.
 
 ### 파이프라인 안에서 데이터가 어디서 나와 어디로 가나

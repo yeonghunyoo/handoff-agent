@@ -35,11 +35,18 @@ async def scenario():
     server.ROOT = root
     pkg = cases.make_package(os.path.join(os.path.dirname(root), "pkg"))
     prompts = []
+    mode = {"kind": "accept"}                       # 클라이언트 흉내: cancel · decline · accept(폼 제출)
 
     async def elicit(ctx, params):
         prompts.append(params.message)
-        approve = len(prompts) != 1                 # 첫 승인은 반려, 그 다음은 승인
+        if mode["kind"] in ("cancel", "decline"):   # 창 없는 클라이언트의 자동 응답 (content 없음)
+            return ElicitResult(action=mode["kind"])
+        approve = len(prompts) != 4                 # 폼 제출: 첫 제출은 반려, 그 다음은 승인
         return ElicitResult(action="accept", content={"approved": approve, "reason": "" if approve else "라우트 빠짐"})
+
+    def rejected():
+        with open(os.path.join(root, ".handoff", "state.json")) as f:
+            return [h for h in json.load(f)["history"] if h["ev"] == "review_rejected"]
 
     async with create_client_server_memory_streams() as (cs, ss):
         low = server.mcp._lowlevel_server
@@ -66,11 +73,25 @@ async def scenario():
             check("spec_save", r["ok"] and not r.get("draft"), r)
             r = await call("api_submit", openapi=cases.OPENAPI)
             check("api_submit", r["ok"] and len(r["routes"]) == 3, r.get("message"))
+            mode["kind"] = "cancel"
             r = await call("review")
-            check("review: 1차 반려 (elicitation)", r["ok"] and r["approved"] is False and len(prompts) == 1, r)
+            check("review: 자동 cancel → 채널 없음 (반려 기록 안 함)",
+                  r.get("pending_human") and r.get("no_channel") and "run.py" in r["message"] and not rejected(), r)
+            mode["kind"] = "decline"
             r = await call("review")
-            check("review: 2차 승인 → build", r["ok"] and r["approved"] and r["version"] == 1 and len(prompts) == 2, r)
-            check("elicitation 문구에 지문", "지문" in prompts[1])
+            check("review: 즉답 decline → 채널 없음 (반려 기록 안 함)",
+                  r.get("pending_human") and "자동 응답" in r.get("no_channel", "") and not rejected(), r)
+            server.AUTO_REPLY_SECONDS = 0.0         # 사람이 읽고 누른 decline 흉내
+            r = await call("review")
+            check("review: 사람 decline → 반려 기록", r["ok"] and r["approved"] is False and len(rejected()) == 1, r)
+            server.AUTO_REPLY_SECONDS = 5.0
+            mode["kind"] = "accept"
+            r = await call("review")
+            check("review: 폼 반려 (elicitation)", r["ok"] and r["approved"] is False and len(prompts) == 4
+                  and rejected()[-1]["reason"] == "라우트 빠짐", r)
+            r = await call("review")
+            check("review: 승인 → build", r["ok"] and r["approved"] and r["version"] == 1 and len(prompts) == 5, r)
+            check("elicitation 문구에 지문", "지문" in prompts[-1])
             r = await call("build")
             check("build", r["ok"] and len(r["prompts"]) == 3, r.get("message"))
             cases.implement(root)
@@ -78,7 +99,7 @@ async def scenario():
                 r = await call("report", role=role, report=cases.report())
             check("report → verify pass", r["ok"] and r["verify"]["verdict"] == "pass", r.get("verify", {}).get("blockers"))
             r = await call("ship")
-            check("ship: 승인 → 머지", r["ok"] and r["approved"] and len(r["merges"]) == 3 and len(prompts) == 3, r)
+            check("ship: 승인 → 머지", r["ok"] and r["approved"] and len(r["merges"]) == 3 and len(prompts) == 6, r)
             r = await call("status")
             check("done", r["phase"] == "done")
         task.cancel()
