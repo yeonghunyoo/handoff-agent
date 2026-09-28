@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "handoff",
-  "description": "Claude Design 핸드오프 패키지로 iOS · Android · backend 를 한 번에 만드는 에이전트",
+  "description": "Claude Design 핸드오프 패키지로 iOS · Android · web · backend 를 한 번에 만드는 에이전트",
   "owner": {"name": "yeonghunyoo"},
   "plugins": [
     {

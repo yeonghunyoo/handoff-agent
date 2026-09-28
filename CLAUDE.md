@@ -35,7 +35,7 @@ python3 server/run.py unbundle <standalone.html> <폴더>
 ## 구조 — 한눈에
 
 ```
-server.py (MCP, 도구 13개)  ─┐
+server.py (MCP, 도구 12개)  ─┐
 run.py    (CLI · 런처)       ─┴→ tools.py (순수 함수) → flow · design · derive · api · infra · gen · checks · score · reports · git · util
 hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 ```
