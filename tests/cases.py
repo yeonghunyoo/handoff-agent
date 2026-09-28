@@ -758,6 +758,49 @@ def test_evidence():
         print("  (skip) 이 기기에 Xcode 가 있어 static-only 절 검사를 건너뛴다")
 
 
+def test_parity_snapshot():
+    """iOS 와 Android 를 따로(다른 사이클) 돌려도 같은 계약 지문이면 지난 검사의 스냅샷과 파리티를 잰다."""
+    root = to_locked(make_repo(), spec={**SPEC, "platforms": ["ios"]})
+    tools.build(root)
+    implement(root, roles=("backend", "ios"))
+    tools.report(root, "backend", report())
+    v = tools.report(root, "ios", report())["verify"]
+    check("snapshot: iOS 만 → 파리티 갭 없음 · pass", v["verdict"] == "pass" and v["parity"] == [] and v["parity_snapshots"] == {}, (v["verdict"], v["parity"]))
+    snap = util.read_json(util.ho(root, score.EVIDENCE, "ios.json"))
+    fp = util.fingerprint(root)
+    check("snapshot: .handoff/evidence/ios.json (지문 포함)", snap and snap["fingerprint"] == fp and any(i["used"] for i in snap["consumption"]["items"]), snap and snap.get("fingerprint"))
+    r = tools.ship(root, approver=APPROVE)
+    assert r["ok"] and r["approved"], r["message"]
+    # 사이클 2 — 같은 design/·api/, Android 만
+    r = tools.spec_save(root, {"platforms": ["android"]})
+    assert r["ok"] and not r.get("draft"), r
+    assert tools.api_submit(root, OPENAPI)["ok"]
+    r = tools.review(root, approver=APPROVE)
+    assert r["approved"], r["message"]
+    check("snapshot: 지문은 그대로 (계약 v2)", util.fingerprint(root) == fp and flow.current(root, util.load_config(root))["version"] == 2)
+    cfg = util.load_config(root)
+    cfg["score"]["threshold"] = 97                  # 갭 하나의 감점이 임계치를 넘게 — 인계까지 확인한다
+    util.write_config(root, cfg)
+    tools.build(root)
+    implement(root, roles=("backend", "android"), skip_screen=("android", "settings"))
+    tools.report(root, "backend", report())
+    v = tools.report(root, "android", report(not_done=["SCR-03 settings"]))["verify"]
+    gap = [g for g in v["parity"] if "settings" in g["id"]]
+    check("snapshot: Android 만 돌려도 iOS 스냅샷과 대조 → settings 갭", gap and gap[0]["missing"] == "android" and gap[0]["done"] == "ios"
+          and gap[0]["snapshot"] == "ios" and "ios" in v["parity_snapshots"], v["parity"])
+    check("snapshot: 체크리스트에 스냅샷 대조 표시", "스냅샷" in v["checklist"]["markdown"] and "(스냅샷 대조)" in v["checklist"]["markdown"])
+    ho = util.read_json(util.ho(root, util.HANDOFF))
+    check("snapshot: loop 인계에 갭", v["verdict"] == "loop" and ho and any("settings" in x for x in ho["roles"]["android"]["parity"]), ho and ho["roles"]["android"])
+    # 계약이 바뀌면 옛 스냅샷은 무시된다
+    root2 = to_locked(make_repo(), spec={**SPEC, "platforms": ["android"]})
+    util.write_json(util.ho(root2, score.EVIDENCE, "ios.json"), {**snap, "fingerprint": "000000000000"})
+    tools.build(root2)
+    implement(root2, roles=("backend", "android"), skip_screen=("android", "settings"))
+    tools.report(root2, "backend", report())
+    v = tools.report(root2, "android", report())["verify"]
+    check("snapshot: 다른 지문의 스냅샷은 무시", v["parity"] == [] and v["parity_snapshots"] == {}, v["parity"])
+
+
 def test_violations_and_secrets():
     root = to_locked(make_repo())
     tools.build(root)
@@ -1148,7 +1191,7 @@ def test_target_and_variants():
     check("scan: derived/ 의 html 은 화면으로 잡지 않는다", [s["id"] for s in design.scan(root)["screens"]] == ["orderDetail", "orderList", "settings"], design.scan(root)["screens"])
 
 
-TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle, test_evidence,
+TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle, test_evidence, test_parity_snapshot,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks, test_security, test_web_role, test_target_and_variants]
 

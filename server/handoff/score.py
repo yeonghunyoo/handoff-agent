@@ -17,10 +17,28 @@ import os
 from . import checks, git, leaks, util
 
 REPORT_STATUS = ("done", "partial", "blocked")
+EVIDENCE = "evidence"      # .handoff/evidence/<role>.json — verify 때마다 남기는 정적 스냅샷(소비·토큰). 같은 계약 지문이면
+                           # 상대 플랫폼이 이번 런에 없어도 파리티를 잰다 — iOS 와 Android 를 따로(다른 사이클·다른 기기) 돌릴 수 있다
 
 
 def read_report(root, role):
     return util.read_json(util.ho(root, util.REPORTS, f"{role}.json"))
+
+
+def _snapshot_of(e):
+    return {"role": e["role"],
+            "consumption": {"items": [{k: i.get(k) for k in ("id", "kind", "name", "label", "used", "const")} for i in e["consumption"]["items"]]},
+            "tokens": sorted(e.get("tokens") or [])}
+
+
+def write_snapshot(root, e, fingerprint):
+    util.write_json(util.ho(root, EVIDENCE, f"{e['role']}.json"), {**_snapshot_of(e), "fingerprint": fingerprint, "at": util.now()})
+
+
+def read_snapshot(root, role, fingerprint):
+    """같은 계약 지문(design/+api/)의 스냅샷만 — 계약이 바뀌었으면 옛 구현과의 대조는 의미가 없다."""
+    s = util.read_json(util.ho(root, EVIDENCE, f"{role}.json"))
+    return s if isinstance(s, dict) and s.get("fingerprint") == fingerprint and s.get("role") == role else None
 
 
 def validate_report(rep):
@@ -145,10 +163,31 @@ def evaluate(root, cfg, roles, version):
     cons_score = sum(cons) / len(cons) if cons else 100.0
     ts = [per[r]["tests"]["score"] for r in roles if per[r]["tests"]["score"] is not None]
     tests_score = sum(ts) / len(ts) if ts else None
+    fp = util.fingerprint(root)
+    for r in roles:
+        write_snapshot(root, per[r], fp)                    # 다음 런(다른 플랫폼·다른 기기)의 파리티 상대가 된다
     mobile = [r for r in roles if r in util.MOBILE]
-    gaps = checks.parity(per[mobile[0]], per[mobile[1]], approved) if len(mobile) == 2 else []   # iOS ↔ Android — 그대로
-    web_gaps = (checks.parity_web(per["web"], [per[r] for r in mobile], approved, t.get("gesture_handlers"))
-                if "web" in roles and mobile else [])                                          # web ↔ 모바일 합집합 — web 이 있을 때만
+    snaps = {}                                               # 이번 런에 없는 앱 역할의 스냅샷 (같은 지문일 때만)
+    for r in (*util.MOBILE, "web"):
+        if r not in roles:
+            s = read_snapshot(root, r, fp)
+            if s:
+                snaps[r] = s
+    if len(mobile) == 2:
+        gaps = checks.parity(per[mobile[0]], per[mobile[1]], approved)                        # iOS ↔ Android — 그대로
+    elif len(mobile) == 1 and any(m in snaps for m in util.MOBILE):
+        other = [m for m in util.MOBILE if m != mobile[0]][0]
+        gaps = [{**g, "snapshot": other, "snapshot_at": snaps[other]["at"]} for g in checks.parity(per[mobile[0]], snaps[other], approved)]
+    else:
+        gaps = []
+    mobiles_for_web = [per[r] for r in mobile] + [snaps[m] for m in util.MOBILE if m in snaps]
+    web_eval = per["web"] if "web" in roles else snaps.get("web")
+    if web_eval and mobiles_for_web:                                                         # web ↔ 모바일 합집합 — web 이 (스냅샷으로라도) 있을 때만
+        used_snaps = [m for m in util.MOBILE if m in snaps] + (["web"] if "web" not in roles else [])
+        web_gaps = [({**g, "snapshot": used_snaps} if used_snaps else g)
+                    for g in checks.parity_web(web_eval, mobiles_for_web, approved, t.get("gesture_handlers"))]
+    else:
+        web_gaps = []
     unapproved = sum(len(per[r]["unapproved_divergences"]) for r in roles)
     parity_score = max(0.0, 100.0 - sc["divergence_penalty"] * (unapproved + len(gaps) + len(web_gaps)))
 
@@ -170,7 +209,7 @@ def evaluate(root, cfg, roles, version):
     ok = not blockers and score >= sc["threshold"]
     verdict = "loop" if not ok else "pass_static" if runtime_pending else "pass"
     return {"roles": per, "score": round(score, 1), "threshold": sc["threshold"], "verdict": verdict,
-            "runtime_pending": runtime_pending,
+            "runtime_pending": runtime_pending, "parity_snapshots": {r: s["at"] for r, s in snaps.items()},
             "blockers": blockers, "parity": gaps, "parity_web": web_gaps,
             "components": {"consumption": round(cons_score, 1),
                            "tests": round(tests_score, 1) if tests_score is not None else None,

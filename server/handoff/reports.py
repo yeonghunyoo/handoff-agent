@@ -545,15 +545,18 @@ def checklist(result, version):
         for b in e["blockers"]:
             L.append(f"- [ ] 블로커: {b}")
         L.append("")
+    snaps = result.get("parity_snapshots") or {}
+    snap_note = (" — 이번 런에 없는 " + ", ".join(f"{r}(스냅샷 {at[:16]})" for r, at in snaps.items()) + " 은 같은 계약의 지난 검사 스냅샷과 대조했다"
+                 if snaps else "")
     if result["parity"]:
-        L.append("**파리티 (iOS ↔ Android)**")
+        L.append("**파리티 (iOS ↔ Android)**" + snap_note)
         for g in result["parity"]:
-            L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐")
+            L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐" + (" (스냅샷 대조)" if g.get("snapshot") else ""))
         L.append("")
     if result.get("parity_web"):
-        L.append("**파리티 (web ↔ 모바일)** — 모바일은 iOS·Android 중 하나라도 한 것을 기준으로 잰다")
+        L.append("**파리티 (web ↔ 모바일)** — 모바일은 iOS·Android 중 하나라도 한 것을 기준으로 잰다" + snap_note)
         for g in result["parity_web"]:
-            L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐")
+            L.append(f"- [ ] {g['kind']} {g['id']} — {g['done']} 만 했다, **{g['missing']}** 가 빠짐" + (" (스냅샷 대조)" if g.get("snapshot") else ""))
         L.append("")
     # 분석 — 숫자에서 나오는 사실만
     A = ["**분석**"]
