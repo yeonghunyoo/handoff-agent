@@ -20,5 +20,12 @@ jobs:
       - run: |
           python3 -m venv server/.venv
           server/.venv/bin/pip install -q mcp==2.1.1
-      - run: bash tests/run.sh 2>&1 | tee out.txt
+      # 문법 오류는 테스트가 돌기 전에 잡는다 — 3.10 에서 SyntaxError 가 나면 테스트 파일 자체가 안 돈다
+      - run: python3 -m compileall -q server hooks tests
+      # pipefail 없이는 `| tee` 가 run.sh 의 종료 코드를 삼킨다 (2026-09 까지 3.10 잡이 0초 만에 초록이던 원인)
+      - run: |
+          set -o pipefail
+          bash tests/run.sh 2>&1 | tee out.txt
+      # 부정 조건만으로는 아무것도 안 돌아도 통과한다 — 두 계층의 성공 표식을 직접 확인한다
+      - run: grep -q '^all ok' out.txt && grep -q '^mcp ok' out.txt
       - run: "! grep -q 'MCP 계층 검사를 건너뛴다' out.txt"

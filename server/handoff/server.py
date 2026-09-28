@@ -24,7 +24,7 @@ ROOT = os.path.abspath(os.environ.get("HANDOFF_ROOT") or os.getcwd())
 
 mcp = MCPServer(
     "handoff",
-    instructions=("Claude Design 핸드오프 패키지로 iOS · Android · backend 를 한 번에 만드는 워크플로 서버. "
+    instructions=("Claude Design 핸드오프 패키지로 iOS · Android · web · backend 를 한 번에 만드는 워크플로 서버. "
                   "순서는 status 가 안내한다: 패키지 등록 → 스펙 → openapi → 계약 확정(사람) → 구현 → 검사 → "
                   "완료 승인(사람). 뒤로 가려면 back."),
 )

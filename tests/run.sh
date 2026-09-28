@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 도구 자신을 검사한다. 인자 없으면 전체 + MCP 계층(server/.venv 필요).
-set -u
+set -uo pipefail
 cd "$(dirname "$0")"
 python3 cases.py "$@" || exit 1
 if [ $# -eq 0 ]; then
