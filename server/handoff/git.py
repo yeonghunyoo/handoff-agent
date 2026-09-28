@@ -6,11 +6,15 @@
 import contextlib
 import os
 import subprocess
+import threading
 
 from . import util
 
 PREFIX = "handoff/"
 _cache = None
+# `git worktree add` 는 동시 실행에 안전하지 않다 — 한쪽이 .git/worktrees/<other>/commondir 를 읽다 깨진다
+# (build 가 역할별 워크트리를 스레드로 준비한다). 생성만 직렬화하고 상수 쓰기·커밋은 병렬 그대로.
+_WORKTREE_LOCK = threading.Lock()
 _WRITES = {"add", "rm", "commit", "merge", "reset", "checkout", "switch", "branch", "worktree",
            "stash", "init", "tag", "restore", "prune"}
 
@@ -86,13 +90,14 @@ def dirty_main(root):
 def ensure_worktree(root, role):
     wt = util.worktree(root, role)
     b = branch(role)
-    if os.path.isdir(wt):
-        return wt, False
-    os.makedirs(os.path.dirname(wt), exist_ok=True)
-    if branch_exists(root, b):
-        run(root, "worktree", "add", wt, b)
-    else:
-        run(root, "worktree", "add", "-b", b, wt, "HEAD")
+    with _WORKTREE_LOCK:
+        if os.path.isdir(wt):
+            return wt, False
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        if branch_exists(root, b):
+            run(root, "worktree", "add", wt, b)
+        else:
+            run(root, "worktree", "add", "-b", b, wt, "HEAD")
     return wt, True
 
 
