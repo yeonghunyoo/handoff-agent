@@ -83,7 +83,7 @@ def status_lines(cwd):
 
 def dirty_main(root):
     """본선 작업트리의 미커밋 변경 — 도구가 관리하는 자리는 뺀다."""
-    managed = (util.HO_DIR + "/", util.DOCS_DIR + "/", ".gitignore", ".claude/", "CLAUDE.md")
+    managed = (util.HO_DIR + "/", util.DOCS_DIR + "/", ".gitignore", ".claude/", "CLAUDE.md", util.SPEC_SEED)
     return [p for _, p in status_lines(root) if not p.startswith(managed)]
 
 

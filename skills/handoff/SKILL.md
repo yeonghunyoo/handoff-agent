@@ -8,9 +8,26 @@ description: Claude Design 핸드오프 패키지(zip/폴더) 하나로 iOS · A
 MCP 서버 `handoff` 가 단계를 강제한다. 이 스킬이 하는 일은 둘뿐이다: 서버가 알려주는 다음 걸음을 실행하고,
 사람에게 물을 것을 묻는다. **사용자에게 하는 말은 존댓말**. 이 문서의 해라체는 에이전트 지시문이다.
 
+## 흐름은 서버의 그래프가 끈다 — `advance` · `submit`
+
+`advance` 를 부른다. 응답의 `pending` 이 과제(`kind: task`)면 `task` 이름대로 수행하고 `submit(payload)` 로 낸다 — payload 모양은
+과제의 `submit` 에 적혀 있다. 사람 승인(review · ship)은 `advance` 안에서 elicitation 으로 뜬다. 과제 종류와 하는 일:
+
+| 과제 | 하는 일 (아래 단계별 표의 해당 행이 상세) |
+|---|---|
+| `import_design` | 후보(candidates)를 사용자에게 확인받거나 경로·링크를 받아 `{path, url?, target?}` |
+| `confirm_screens` | 화면·컴포넌트 목록을 사용자에게 보여 확정 — 고칠 게 없으면 `{}` |
+| `spec` | 남은 항목만 묻고 `{platforms, stack, infra}` 부분 답 (규모 → 요금 조회 → 조합 순서는 ② 행 그대로) |
+| `api_submit` | design/ 을 읽고 `{openapi}` 초안 |
+| `fix_after_rejection` · `fix_after_hold` · `fix` | 반려·보류·거부 사유대로 고친다 — `{back, reason}` 또는 `{openapi}` 또는 `{retry: true}` |
+| `run_builder` | `roles` 의 각 역할을 `<role>-builder` 서브에이전트로 `prompts` 그대로 띄우고, report 가 접수되면 `{}` |
+
+`advance` 가 끝(`pending` 없음)이면 단계 한 줄만 보인다. 아래 "항상 먼저" 와 단계별 표는 과제를 어떻게 수행하는지의 정본이고,
+개별 도구(`import_design` `spec_save` `api_submit` `build` …)는 여전히 직접 부를 수 있다 — 그래프는 매번 실측 상태를 다시 읽는다.
+
 ## 항상 먼저
 
-`status` 를 부른다. `next` 가 다음 걸음, `warnings` 는 단계와 무관하게 먼저 처리한다.
+`status` 를 부른다. `next` 가 다음 걸음, `warnings` 는 단계와 무관하게 먼저 처리한다. `pending` 이 있으면 그래프가 멈춘 자리다.
 미배선이면 `setup` 을 부른다 (config · .gitignore · CLAUDE.md 절 — 세션 재시작 불필요).
 `status.candidates` 는 서버가 레포 루트에서 찾은 패키지 후보(내보낸 zip/tar · standalone HTML · 핸드오프 번들 폴더)다.
 사용자가 경로를 말하지 않았으면 이 목록을 보이고 — 하나면 그것으로 등록할지, 여럿이면 어느 것인지 — 확인받은 뒤

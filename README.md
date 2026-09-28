@@ -51,6 +51,20 @@
 이후 사람이 손대는 지점은 프로세스 표의 ✋ 둘과, 승인창(elicitation)이 안 뜰 때의 터미널 승인
 (`python3 <플러그인 루트>/server/run.py review|ship --root .`) 뿐이다.
 
+### 스킬 없이 — 터미널에서 돌리기
+
+흐름은 서버 안의 그래프(LangGraph 상태기계)가 끈다. Claude Code 에서는 `/handoff` 스킬이 MCP `advance` 를 부르고, 터미널에서는
+같은 그래프를 직접 돌릴 수 있다:
+
+```bash
+python3 <플러그인 루트>/server/run.py run --root .                  # 다음 멈춤까지 — 승인 지점이면 여기서 y/N
+python3 <플러그인 루트>/server/run.py submit answer.json --root .   # 과제(패키지 경로 · 스펙 답 · openapi …)의 답을 내고 이어 돌린다
+```
+
+- 레포 루트에 `handoff.spec.json`(platforms · stack · infra)을 커밋해 두면 인터뷰가 생략된다 — 빈 항목만 묻는다. 계약 확정 커밋에 함께 들어간다.
+- `.handoff/config.json` 의 `builder.command` 를 채우면(예: `claude -p …`) 그래프가 빌더를 직접 띄운다 — 프롬프트는 stdin, cwd 는 워크트리,
+  환경 변수 `HANDOFF_ROOT` `HANDOFF_ROLE` `HANDOFF_WORKTREE`. 비어 있으면 스킬이 서브에이전트로 띄우는 과제로 돌아온다.
+
 ## 프로세스
 
 ✋ = 사람이 판단하는 자리.
@@ -62,8 +76,8 @@
 | ③ 백엔드 계약 | 화면·문서에서 필요한 데이터로 `api/openapi.yaml` 초안 | — |
 | ④ 계약 확정 ✋ | 요약 표(디자인 출처 · 화면 · 계약 지문 · 선택한 인프라)를 채팅에 보인다 | 지문을 대조하고 승인/반려 |
 | ⑤ 구현 | 역할별 워크트리 + 생성 상수(`ApiRoutes` `Screens` `DesignTokens`) + 착수 프롬프트로 구현. `build` 응답의 `dispatch` 대로 — 기본 직렬(한 번에 한 역할), `config.json` 의 `dispatch.mode: "parallel"` 로 동시 착수 | 기다린다 |
-| ⑥ 검사 | 서버가 재검사해 점수 → `loop`(인계 후 재착수) 또는 `pass` | 계약 수정 제안이 있으면 판단 |
-| ⑦ 완료 승인 ✋ | 예외 항목(테스트 skip·하드코딩·플랫폼 차이)과 함께 보인다 | 승인 → main 머지 |
+| ⑥ 검사 | 서버가 재검사해 점수 → `loop`(인계 후 재착수) 또는 `pass` / `pass_static`(정적 검사는 통과, 빌드·테스트 증거가 없는 역할이 있음 — Xcode·SDK 없는 기기) | 계약 수정 제안이 있으면 판단 |
+| ⑦ 완료 승인 ✋ | 예외 항목(테스트 skip·하드코딩·플랫폼 차이·런타임 미검증)과 함께 보인다 | 승인 → main 머지. `pass_static` 이었으면 그 역할이 `runtime_pending` 으로 남는다 — 툴체인 있는 기기에서 나중에 검증. 막으려면 config `verify.require_runtime: true` |
 
 앞 단계로 돌아가고 싶으면 아무 때나 말하면 된다(`back`). 잠금 뒤 `design/`·`api/` 가 바뀌면 자동으로 재승인을 요구한다.
 
@@ -167,9 +181,9 @@ Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이�
 
 ## 레포에 깔리는 것
 
-`.handoff/`(상태·리포트·워크트리 — 커밋 안 됨) · `design/`(패키지) · `api/openapi.yaml` · `shared/generated/`(워크트리에만) ·
-`docs/handoff-*` · `.gitignore` 몇 줄 · `CLAUDE.md` 의 handoff 절. 설정은 `.handoff/config.json` (담당 경로 `roles` ·
-`score.threshold` · `verify.commands` — 이 명령은 서버가 셸로 실행하므로 config 가 git 에 추적되면 실행을 거부한다).
+`.handoff/`(상태·리포트·워크트리·그래프 체크포인트 `graph.sqlite` — 커밋 안 됨) · `design/`(패키지) · `api/openapi.yaml` · `shared/generated/`(워크트리에만) ·
+`docs/handoff-*` · `.gitignore` 몇 줄 · `CLAUDE.md` 의 handoff 절 · (선택) `handoff.spec.json`. 설정은 `.handoff/config.json` (담당 경로 `roles` ·
+`score.threshold` · `verify.commands` · `verify.require_runtime` · `builder.command` · `dispatch.mode` — 셸 명령은 서버가 실행하므로 config 가 git 에 추적되면 실행을 거부한다).
 
 ## 검증
 

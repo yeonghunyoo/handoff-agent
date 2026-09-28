@@ -1,0 +1,4 @@
+# 서버 의존성 — run.py 가 server/.venv 에 이 핀을 설치한다. CI 도 같은 파일을 쓴다.
+mcp==2.1.1
+langgraph==1.2.12
+langgraph-checkpoint-sqlite==3.1.1
