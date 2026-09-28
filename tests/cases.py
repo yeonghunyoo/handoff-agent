@@ -720,6 +720,44 @@ def test_loop_and_handoff():
     check("loop: 승인된 발산은 파리티 갭 아님", v["components"]["parity_gaps"] == 0, v["parity"])
 
 
+def test_evidence():
+    """검사 두 층 — 빌더가 build.ok=null(툴체인 없음)로 보고하면 pass_static · ship 이 runtime_pending 을 남긴다."""
+    root = to_locked(make_repo())
+    tools.build(root)
+    implement(root)
+    static_rep = report(build={"ok": None, "seconds": 0}, tests={"passed": 0, "failed": 0, "seconds": 0})
+    tools.report(root, "backend", report())
+    tools.report(root, "ios", static_rep)
+    v = tools.report(root, "android", static_rep)["verify"]
+    check("evidence: 판정 pass_static · runtime_pending=[ios, android]", v["verdict"] == "pass_static" and v["runtime_pending"] == ["ios", "android"],
+          (v["verdict"], v["runtime_pending"], v["blockers"]))
+    check("evidence: 체크리스트에 미검증 표시", "런타임 **미검증**" in v["checklist"]["markdown"] and "pass_static" in v["checklist"]["markdown"])
+    st = flow.current(root, util.load_config(root))
+    check("evidence: pass_static 도 ship 으로", st["phase"] == "ship")
+    r = tools.ship(root, approver=None)
+    check("evidence: 승인 프롬프트에 미검증 역할 + 예외 항목", "런타임 미검증 역할: ios, android" in r["approval_prompt"]
+          and any("runtime unchecked" in x for x in score.exceptions(util.read_json(util.ho(root, "last-verify.json")))), r["approval_prompt"])
+    cfg = util.load_config(root)
+    cfg["verify"]["require_runtime"] = True
+    util.write_config(root, cfg)
+    r = tools.ship(root, approver=APPROVE)
+    check("evidence: require_runtime 이면 ship 거부", not r["ok"] and "require_runtime" in r["message"], r["message"])
+    cfg["verify"]["require_runtime"] = False
+    util.write_config(root, cfg)
+    r = tools.ship(root, approver=APPROVE)
+    st = util.read_state(root)
+    check("evidence: 머지 뒤 state.runtime_pending", r["ok"] and r["approved"] and st["runtime_pending"] == ["ios", "android"] and st["phase"] == "done",
+          (r.get("message"), st.get("runtime_pending")))
+    # 툴체인이 없는 기기의 착수 프롬프트는 정적 전용 지시를 싣는다 (이 CI 기기에는 Xcode 가 없다)
+    from handoff import reports
+    if not reports.toolchain("ios")[0]:
+        root2 = to_locked(make_repo())
+        p = tools.build(root2)["prompts"]["ios"]
+        check("evidence: Xcode 없는 기기 → static-only 절", "static-only build" in p and '"ok": null' in p, p[-800:])
+    else:
+        print("  (skip) 이 기기에 Xcode 가 있어 static-only 절 검사를 건너뛴다")
+
+
 def test_violations_and_secrets():
     root = to_locked(make_repo())
     tools.build(root)
@@ -884,6 +922,8 @@ def test_hooks():
         ("Bash", {"command": "rm -rf design"}, "deny"),
         ("Bash", {"command": "cat .env"}, "deny"),
         ("Bash", {"command": "python3 server/run.py ship --root ."}, "deny"),
+        ("Bash", {"command": "python3 server/run.py run --root ."}, "deny"),       # run 도 tty 승인 지점을 지난다
+        ("Bash", {"command": "python3 server/run.py submit payload.json --root ."}, "allow"),
         ("Bash", {"command": "ls apps/ios"}, "allow"),
         # 민감 파일 — 검색 · 홈 디렉터리 · 환경 변수 덤프
         ("Grep", {"pattern": "KEY", "path": os.path.join(root, "backend/.env")}, "deny"),
@@ -1108,7 +1148,7 @@ def test_target_and_variants():
     check("scan: derived/ 의 html 은 화면으로 잡지 않는다", [s["id"] for s in design.scan(root)["screens"]] == ["orderDetail", "orderList", "settings"], design.scan(root)["screens"])
 
 
-TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle,
+TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle, test_evidence,
          test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks, test_security, test_web_role, test_target_and_variants]
 

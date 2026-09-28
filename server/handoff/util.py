@@ -23,6 +23,7 @@ SHOTS = "shots"                  # <worktree>/.handoff/shots/<screen>.png
 
 DESIGN_DIR = "design"
 API_DIR = "api"
+SPEC_SEED = "handoff.spec.json"  # 레포 루트 — 커밋된 스펙 기본값. 그래프가 인터뷰 대신 먼저 넣고, 계약 확정 커밋에 함께 들어간다
 API_FILE = "openapi.yaml"
 GEN_DIR = os.path.join("shared", "generated")
 DOCS_DIR = "docs"
@@ -41,7 +42,12 @@ DEFAULTS = {
         "hardcode_penalty": 2,
         "divergence_penalty": 10,
     },
-    "verify": {"commands": {"backend": [], "ios": [], "android": [], "web": []}, "timeout_sec": 600},
+    # require_runtime: true 면 런타임 증거(서버가 돌린 테스트 또는 빌드 성공 리포트)가 없는 역할이 있을 때 ship 을 거부한다.
+    # 기본 false — 툴체인 없는 기기에서는 정적 검사만으로 pass_static 을 내고, 런타임 검증은 상태(runtime_pending)에 남긴다.
+    "verify": {"commands": {"backend": [], "ios": [], "android": [], "web": []}, "timeout_sec": 600, "require_runtime": False},
+    # builder.command: 그래프(graph.advance)가 역할을 착수할 때 서버가 직접 띄우는 셸 명령. 착수 프롬프트를 stdin 으로 받고
+    # cwd 는 워크트리, 환경 변수 HANDOFF_ROOT · HANDOFF_ROLE · HANDOFF_WORKTREE. 비어 있으면 클라이언트(스킬)에 과제로 넘긴다.
+    "builder": {"command": "", "timeout_sec": 7200},
     # 착수 방식. serial 이 기본이다 — iOS·Android 툴체인을 한 기기에서 동시에 돌리면 코어를 나눠 써서
     # 각 빌드가 느려지고, 한쪽이 막히면 세션 전체가 길어진다. 코어가 넉넉하면 "parallel" 로 바꾼다.
     "dispatch": {"mode": "serial", "order": ["backend", "ios", "android", "web"]},
@@ -108,7 +114,8 @@ EMPTY_STATE = {
     "locked": None,          # {"version": n, "hash": 지문} — 승인 시점의 design/+api/ 지문
     "roles": [],             # 이번 루프에 착수한 역할
     "reports": [],           # 리포트를 낸 역할
-    "verdict": None,         # 마지막 verify 결과 (loop | pass)
+    "verdict": None,         # 마지막 verify 결과 (loop | pass_static | pass)
+    "runtime_pending": [],   # 런타임 증거 없이 머지된 역할 — 툴체인 있는 기기에서 나중에 검증한다
     "design_source": None,   # {"path", "url", "project_id"} — 패키지 출처 (요약 표에 보인다)
     "history": [],           # 서버가 적는 사건 기록 (감사용)
 }

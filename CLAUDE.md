@@ -14,20 +14,23 @@ iOS · Android · web · backend 를 역할별 git 워크트리에서 구현하�
 ## 명령
 
 ```bash
-bash tests/run.sh                 # 전체 — cases.py + (server/.venv 가 있으면) mcp_cases.py
+bash tests/run.sh                 # 전체 — cases.py + (server/.venv 가 있으면) mcp_cases.py · graph_cases.py
 bash tests/run.sh parity          # 이름 조각으로 좁혀 (여러 조각 가능: bash tests/run.sh hook derive)
-python3 tests/cases.py parity     # 위와 같음, MCP 계층 제외
-server/.venv/bin/python3 tests/mcp_cases.py   # MCP 계층만 (elicitation 승인 경로)
+python3 tests/cases.py parity     # 위와 같음, MCP·그래프 계층 제외
+server/.venv/bin/python3 tests/mcp_cases.py     # MCP 계층만 (elicitation 승인 경로)
+server/.venv/bin/python3 tests/graph_cases.py   # 그래프 계층만 (task ↔ submit · approval ↔ approver · builder.command · pass_static)
 ```
 
-- 테스트는 임시 디렉터리에 가짜 레포·패키지를 만들어 전체 사이클을 돈다. 리포를 더럽히지 않고 픽스처 파일도 없다 — 픽스처는 `tests/cases.py` 안의 상수(`OPENAPI` `SPEC` 등)다.
-- MCP 계층 검사는 `server/.venv` 가 필요하다. `python3 server/run.py serve` 를 한 번 띄우면 자동 생성되고(`mcp==2.1.1` 고정), CI 는 이 검사가 건너뛰어지면 실패로 잡는다. 수동 생성: `python3 -m venv server/.venv && server/.venv/bin/pip install mcp==2.1.1`.
-- 의존성은 `mcp` 하나뿐이고 `server/handoff/server.py` 만 import 한다. 나머지는 stdlib. YAML 도 자체 부분집합 파서(`api.py`)다 — PyYAML 을 넣지 않는다.
+- 테스트는 임시 디렉터리에 가짜 레포·패키지를 만들어 전체 사이클을 돈다. 리포를 더럽히지 않고 픽스처 파일도 없다 — 픽스처는 `tests/cases.py` 안의 상수(`OPENAPI` `SPEC` 등)다. `tests/fake_builder.py` 는 `builder.command` 자리에 서는 가짜 빌더다.
+- MCP·그래프 계층 검사는 `server/.venv` 가 필요하다. `python3 server/run.py serve` 를 한 번 띄우면 `server/requirements.txt` 핀으로 자동 생성되고, CI 는 이 검사가 건너뛰어지면 실패로 잡는다. 수동 생성: `python3 -m venv server/.venv && server/.venv/bin/pip install -r server/requirements.txt`.
+- 의존성은 `mcp`(`server.py` 만 import) 와 `langgraph` + SQLite 체크포인터(`graph.py` 만 import) 다. 나머지는 stdlib. YAML 도 자체 부분집합 파서(`api.py`)다 — PyYAML 을 넣지 않는다.
 - git `user.name`/`user.email` 이 설정돼 있어야 테스트가 돈다.
 
 사람용 CLI (대상 레포에서, `--root` 는 그 레포):
 
 ```bash
+python3 server/run.py run --root <레포>                  # 그래프를 다음 멈춤까지 — 승인은 tty, 과제는 찍고 멈춘다
+python3 server/run.py submit <payload.json> --root <레포>  # 과제의 답을 내고 이어 돌린다
 python3 server/run.py status|setup|review|ship --root <레포>
 python3 server/run.py unbundle <standalone.html> <폴더>
 ```
@@ -35,14 +38,17 @@ python3 server/run.py unbundle <standalone.html> <폴더>
 ## 구조 — 한눈에
 
 ```
-server.py (MCP, 도구 12개)  ─┐
-run.py    (CLI · 런처)       ─┴→ tools.py (순수 함수) → flow · design · derive · api · infra · gen · checks · score · reports · git · util
+server.py (MCP, 도구 14개)  ─┐
+run.py    (CLI · 런처)       ─┼→ graph.py (LangGraph 상태기계 — advance/submit · run) ─┐
+                             └──────────────────────────────────────────────────────┴→ tools.py (순수 함수) → flow · design · derive · api · infra · gen · checks · score · reports · git · util
 hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 ```
 
-- **`tools.py` 가 유일한 진입 API**다. MCP 와 CLI 가 같은 함수를 부르므로 도구를 추가·수정하면 `server.py` 의 래퍼와 `tests/cases.py` 도 같이 고친다.
-- **승인은 `approver` 콜백**으로만 통과한다. `tools.review/ship(root, approver=None)` 은 approver 가 없으면 `pending_human` + `approval_prompt` 만 돌려준다. MCP 는 elicitation, CLI 는 tty 로 콜백을 채운다. 승인 도구에 approve 류 인자를 추가하지 않는다. elicitation 의 cancel · 즉답 decline(`server.AUTO_REPLY_SECONDS` 안, 사유 없음)은 사람 답이 아니라 창 없는 클라이언트(비대화형·브리지 세션)의 자동 응답으로 보고 반려로 기록하지 않는다 — 응답에 `no_channel` 과 터미널 명령을 싣는다. `tests/mcp_cases.py` 가 cancel · 즉답 decline · 사람 decline · 폼 반려 · 승인 다섯 경로를 돈다.
+- **`tools.py` 가 유일한 진입 API**다. MCP 와 CLI 와 그래프 노드가 같은 함수를 부르므로 도구를 추가·수정하면 `server.py` 의 래퍼와 `tests/cases.py` 도 같이 고친다.
+- **흐름의 정본은 `graph.py`** 다. `advance`(MCP) 와 `run.py run`(CLI) 이 같은 그래프를 다음 멈춤까지 돌린다. 멈춤은 둘 — `kind=task`(LLM 과제: 패키지 경로 · 화면 확정 · 스펙 답 · openapi 초안 · 빌더 실행 · 막힘 해소 → `submit(payload)` 로 재개) 와 `kind=approval`(review · ship → approver 콜백으로만 재개, `submit` 은 거부). 체크포인트는 `.handoff/graph.sqlite` 이고 `check` 노드가 매 진입마다 `flow.current()` 로 phase 를 다시 읽으므로 저장 상태와 어긋나면 실측이 이긴다. 노드 안에서 부작용(도구 호출) 뒤에 interrupt 를 두지 않는다 — 재개 때 노드가 처음부터 다시 돌기 때문에 "묻는 노드" 와 "실행 노드" 를 나눈다. `builder.command`(config) 가 있으면 그래프가 빌더를 직접 띄우고(stdin 프롬프트 · cwd 워크트리 · `HANDOFF_ROOT/ROLE/WORKTREE`), 없으면 `run_builder` 과제로 클라이언트에 넘긴다. 레포 루트 `handoff.spec.json` 이 있으면 인터뷰 대신 먼저 들어가고 계약 커밋에 함께 실린다.
+- **승인은 `approver` 콜백**으로만 통과한다. `tools.review/ship(root, approver=None)` 과 `graph.advance(root, approver=None)` 은 approver 가 없으면 `pending_human` + `approval_prompt` 만 돌려준다. MCP 는 elicitation, CLI 는 tty 로 콜백을 채운다. 승인 도구에 approve 류 인자를 추가하지 않는다. elicitation 의 cancel · 즉답 decline(`server.AUTO_REPLY_SECONDS` 안, 사유 없음)은 사람 답이 아니라 창 없는 클라이언트(비대화형·브리지 세션)의 자동 응답으로 보고 반려로 기록하지 않는다 — 응답에 `no_channel` 과 터미널 명령을 싣는다. `tests/mcp_cases.py` 가 cancel · 즉답 decline · 사람 decline · 폼 반려 · 승인 다섯 경로를 돈다.
 - **단계는 `flow.py`** 의 `PHASES` 순서이고, `flow.current()` 가 매번 저장 상태를 실측과 대조한다 (design/+api/ 트리 해시 `util.fingerprint` 가 잠금 지문과 다르면 review 로 강등). 도구는 `flow.require(st, *phases)` 로 단계를 강제한다.
+- **검사는 두 층** — static(소비 · 하드코딩 · 파리티 · 시크릿 · 위반, 어디서든)과 runtime(서버가 돌린 테스트 또는 빌더의 빌드 성공 보고, 툴체인 있는 기기만). `score.evaluate` 가 역할별 `evidence` 를 붙이고, 통과인데 runtime 증거 없는 역할이 있으면 판정이 `pass_static` 이다 (`tools.PASSING`). ship 은 그 역할을 `state.runtime_pending` 에 남기고, `verify.require_runtime`(config) 이 켜져 있으면 거부한다. `reports.toolchain(role)` 이 없다고 하면 착수 프롬프트에 static-only 절(빌드 시도 금지 · `build.ok=null` 보고)이 붙는다.
 
 ### 파이프라인 안에서 데이터가 어디서 나와 어디로 가나
 
@@ -51,10 +57,10 @@ hooks/guard.py               ─ 독립 (stdlib, 서버 import 금지)
 | import | zip/tar.gz/standalone HTML/폴더 | `design/` (정본, 읽기 전용) · `design/derived/*` (`derive.write_all` — 문구·아이콘·모델·전이·**컴포넌트(타입)**·**내비게이션**·의도·규칙·**레이아웃 트리** `layout/<screen>.json` — 무손실, 빌더는 HTML 대신 이것을 옮긴다) · 사람이 확정하면 `design/handoff.manifest.json` v3 (`design.confirm_screens` 가 화면·컴포넌트·대상(target)을 쓰고 `design.write_manifest` 가 상세를 채운다) |
 | spec | 사람 답 (부분 저장 누적: `.handoff/spec.draft.json`) | `.handoff/spec.json` |
 | api | `api_submit` 본문 | `api/openapi.yaml` (`api.validate` 통과분만) |
-| review ✋ | 위 셋 | `state.locked.hash` + 본선 커밋 |
+| review ✋ | 위 셋 (+ 있으면 `handoff.spec.json`) | `state.locked.hash` + 본선 커밋 |
 | build | 계약 | 역할별 브랜치 `handoff/<role>` + 워크트리 `.handoff/worktrees/<role>` + `shared/generated/*` (`gen.expected`) + 영어 착수 프롬프트 (`reports.kickoff`) |
 | precheck / verify | 워크트리 코드·diff | `score.evaluate_role` 결과 · loop 면 `.handoff/handoff.json` 인계 |
-| ship ✋ | 재검사 결과 | `git.merge` |
+| ship ✋ | 재검사 결과 | `git.merge` · `state.runtime_pending` (pass_static 이었으면) |
 
 사람이 보는 것은 `status`/`api_submit` 의 `summary`(디자인 출처 · 계약 · 선택한 인프라 표)와 `verify`/`status` 의 `checklist`(투두식 정합성 목록 + 분석)다 — 둘 다 `reports.py` 가 md 로 렌더링한다.
 

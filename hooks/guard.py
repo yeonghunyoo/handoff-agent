@@ -21,7 +21,7 @@ SENSITIVE_DIR = re.compile(r"(^|/)(\.ssh|\.aws|\.kube|\.gnupg|\.docker|\.azure|\
 ENV_DUMP = re.compile(r"(^|[\s;&|(])(env|printenv|export\s+-p|set)\s*($|[;&|)])")
 HOME_VAR = re.compile(r"\$\{?HOME\}?")
 EXAMPLE = re.compile(r"\.(example|sample|template|dist)$", re.I)
-APPROVE_CMD = re.compile(r"run\.py\b[^|;&\n]*\b(review|ship)\b")
+APPROVE_CMD = re.compile(r"run\.py\b[^|;&\n]*\b(review|ship|run)\b")   # run 도 승인 지점에서 tty 승인을 받는다 — 에이전트가 돌리지 않는다
 MUTATORS = re.compile(r"(^|[\s;&|(])(rm|mv|cp|tee|sed\s+-i|truncate|touch|mkdir|unzip|tar|git\s+(checkout|restore|rm|mv|reset|clean))\b")
 REDIRECT = re.compile(r">{1,2}\s*([^\s;&|]+)")
 
@@ -32,7 +32,7 @@ GUIDE = {
     "state": ".handoff/ 는 도구 상태다 — 서버만 쓴다.",
     "sensitive": "민감 파일이다 — 읽지도 쓰지도 않는다 [S2]. 값이 필요하면 <이름>.example 을 자리표시로 만들고 사람에게 채울 곳을 안내한다.",
     "envdump": "환경 변수 전체 출력은 시크릿을 채팅에 노출한다 [S2] — 필요한 변수 이름만 `printenv NAME` 으로, 값이 시크릿이면 있는지만 `[ -n \"$NAME\" ]` 로 본다.",
-    "approve": "승인은 사람만 한다 — 에이전트가 run.py review|ship 을 실행할 수 없다. elicitation 이나 사람의 터미널 입력을 기다린다.",
+    "approve": "승인은 사람만 한다 — 에이전트가 run.py review|ship|run 을 실행할 수 없다. MCP 의 advance(elicitation)나 사람의 터미널 입력을 기다린다.",
 }
 
 

@@ -6,6 +6,10 @@
   파리티 = 100 − 벌점 × (미승인 발산 + 실측 갭)
   블로커가 하나라도 있으면 점수와 무관하게 loop.
 
+검사는 두 층이다. static(소비 · 하드코딩 · 파리티 · 시크릿 · 위반 — 어디서든 잰다)과 runtime(서버가 돌린 테스트 ·
+빌드 성공 — 툴체인이 있는 기기에서만). 통과했는데 어떤 역할에 runtime 증거가 없으면 판정은 pass 가 아니라
+pass_static 이고, ship 이 그 역할을 runtime_pending 으로 남긴다.
+
 착수 프롬프트의 체크리스트 · precheck · verify 가 전부 같은 함수를 쓴다 — 몰라서 틀리는 루프를 없앤다.
 """
 import os
@@ -115,10 +119,17 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
     unapproved = [d for d in reported
                   if not checks._covered((d.get("topic") if isinstance(d, dict) else d), approved)]
 
+    build_ok = ((report or {}).get("build") or {}).get("ok") if isinstance((report or {}).get("build"), dict) else None
+    server_ran = bool(verify and verify.get("ran"))
+    evidence = {"static": True,
+                "runtime": server_ran or build_ok is True,      # 서버가 돌렸거나, 빌더가 빌드 성공을 보고했거나
+                "runtime_source": "server" if server_ran else "self-reported" if build_ok is True else "none",
+                "build_ok": build_ok}
+
     return {"role": role, "role_path": role_path, "blockers": blockers,
             "consumption": cons, "hardcodes": hard, "tokens": tokens, "bypass": bypass,
             "test_provenance": prov, "test_coverage": cov,
-            "tests": {"score": tests_score, "source": src, "detail": verify},
+            "tests": {"score": tests_score, "source": src, "detail": verify}, "evidence": evidence,
             "unapproved_divergences": unapproved, "report": report, "changed": files}
 
 
@@ -155,8 +166,11 @@ def evaluate(root, cfg, roles, version):
             if key not in seen:
                 seen.add(key)
                 blockers.append(key)
-    verdict = "pass" if not blockers and score >= sc["threshold"] else "loop"
+    runtime_pending = [r for r in roles if not per[r]["evidence"]["runtime"]]
+    ok = not blockers and score >= sc["threshold"]
+    verdict = "loop" if not ok else "pass_static" if runtime_pending else "pass"
     return {"roles": per, "score": round(score, 1), "threshold": sc["threshold"], "verdict": verdict,
+            "runtime_pending": runtime_pending,
             "blockers": blockers, "parity": gaps, "parity_web": web_gaps,
             "components": {"consumption": round(cons_score, 1),
                            "tests": round(tests_score, 1) if tests_score is not None else None,
@@ -181,6 +195,9 @@ def exceptions(result):
             items.append(f"[{r}] unapproved divergence: {(d.get('topic') if isinstance(d, dict) else d)}")
         for x in ((e.get("report") or {}).get("human_check") or [])[:10]:
             items.append(f"[{r}] human check: {str(x)[:160]}")
+        if not e.get("evidence", {}).get("runtime", True):
+            items.append(f"[{r}] runtime unchecked: no build/test evidence on this machine — static checks only; "
+                         "a machine with the toolchain verifies it later (runtime_pending)")
     for g in result["parity"]:
         items.append(f"[{g['missing']}] parity gap {g['kind']} {g['id']} — only {g['done']} did it")
     for g in result.get("parity_web") or []:
@@ -215,6 +232,7 @@ def write_handoff(root, result, version):
             "blockers": e["blockers"],
         }
     h = {"version": version, "score": result["score"], "verdict": result["verdict"], "roles": roles,
+         "runtime_pending": result.get("runtime_pending") or [],
          "proposals": [{"role": r, "proposal": p} for r, e in result["roles"].items()
                        for p in ((e.get("report") or {}).get("proposals") or [])]}
     util.write_json(util.ho(root, util.HANDOFF), h)

@@ -54,11 +54,11 @@ async def scenario():
         async with ClientSession(cs[0], cs[1], elicitation_callback=elicit) as s:
             await s.initialize()
             names = sorted(t.name for t in (await s.list_tools()).tools)
-            check("tools: 12개", names == sorted(["status", "setup", "import_design", "spec_save", "api_submit", "review", "back",
-                                                  "build", "precheck", "report", "verify", "ship"]), names)
+            check("tools: 14개", names == sorted(["status", "setup", "import_design", "spec_save", "api_submit", "review", "back",
+                                                  "build", "precheck", "report", "verify", "ship", "advance", "submit"]), names)
             schemas = {t.name: json.dumps(getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {})
                        for t in (await s.list_tools()).tools}
-            check("승인 도구에 approve 류 인자 없음", all(k not in schemas["review"].lower() and k not in schemas["ship"].lower()
+            check("승인 도구에 approve 류 인자 없음", all(k not in schemas[n].lower() for n in ("review", "ship", "advance")
                                                      for k in ("approve", "yes", "force")))
 
             async def call(name, **args):

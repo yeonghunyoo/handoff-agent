@@ -79,6 +79,28 @@ def machine(role):
     return L
 
 
+def toolchain(role):
+    """이 기기에 그 역할의 빌드 툴체인이 있는가 → (있음, 이름). 없으면 착수 프롬프트가 정적 전용(static-only) 지시로 바뀐다:
+    빌드·테스트·스크린샷을 시도하지 않고 코드만 쓰며 build.ok=null 로 보고한다 — 서버는 그 역할을 runtime_pending 으로 남긴다."""
+    if role == "ios":
+        return bool(_sh("xcodebuild -version 2>/dev/null | head -1")), "Xcode (xcodebuild)"
+    if role == "android":
+        sdk = os.environ.get("ANDROID_HOME") or os.path.expanduser("~/Library/Android/sdk")
+        return os.path.isdir(sdk), "Android SDK (ANDROID_HOME)"
+    if role == "web":
+        return bool(_sh("node --version")), "node"
+    return True, ""
+
+
+STATIC_ONLY = """## No {tool} on this machine — static-only build
+- Do NOT try to build, run tests, boot a simulator/emulator or take screenshots here; every such attempt is a wasted turn.
+- Write the code from the layout tree and the generated constants exactly as the rules require, commit per screen, then run
+  precheck(role) until PASS — it measures everything the static layer can (consumption, hardcodes, parity, secrets).
+- Report with `"build": {{"ok": null, "seconds": 0}}` and `"tests": {{"passed": 0, "failed": 0, "seconds": 0}}`. `ok: null` means
+  "not built here", not "failed". The server records this role as runtime_pending; a machine that has {tool} verifies it later.
+"""
+
+
 def _esc(s):
     return html.escape(str(s if s is not None else ""), quote=True)
 
@@ -318,6 +340,9 @@ def kickoff(root, cfg, role, st, t, handoff):
     mach = machine(role)
     if mach:
         L += ["", "## This machine (detected at dispatch — use these names, do not guess or copy an example)"] + mach
+    has_tool, tool_name = toolchain(role)
+    if not has_tool:
+        L += ["", STATIC_ONLY.format(tool=tool_name).rstrip()]
     L += ["", "## Build loop — the slow part, keep it short",
           "- The fix→build→fix loop must run the CHEAPEST target that surfaces the error. Full packaging, release/R8 builds, "
           "lint and screenshots run ONCE at the end, not every cycle."
@@ -498,8 +523,11 @@ def checklist(result, version):
     for r, e in result["roles"].items():
         cons = e["consumption"]
         rep = e.get("report") or {}
+        ev = e.get("evidence") or {}
         L.append(f"**{r}** ({e['role_path']}/) — 소비 {cons['used']}/{cons['total']} · 리포트 {rep.get('status') or '없음'} · "
-                 f"테스트 {e['tests']['source']}" + (f" {e['tests']['score']:.0f}" if e["tests"]["score"] is not None else ""))
+                 f"테스트 {e['tests']['source']}" + (f" {e['tests']['score']:.0f}" if e["tests"]["score"] is not None else "")
+                 + " · 런타임 " + ("서버 실행" if ev.get("runtime_source") == "server" else
+                                  "빌드 성공 자기신고" if ev.get("runtime_source") == "self-reported" else "**미검증** (정적 검사만)"))
         for i in cons["items"]:
             items.append({"role": r, "id": i["id"], "label": i["const"] or i["label"], "done": bool(i["used"])})
             L.append(f"- [{'x' if i['used'] else ' '}] {i['id']} `{i['const'] or i['label']}`")
@@ -551,6 +579,10 @@ def checklist(result, version):
         A.append("- 계약 수정 제안: " + " · ".join(f"[{r}] {p_}" for r, p_ in props[:5]))
     if result["verdict"] == "pass":
         A.append("- 결론: 계약 항목이 소비됐고 블로커가 없다. 위 [ ] 항목은 승인과 함께 예외로 받아들이는 것이다")
+    elif result["verdict"] == "pass_static":
+        A.append("- 결론: pass_static — 정적 검사는 통과했지만 런타임 증거(빌드·테스트)가 없는 역할이 있다: "
+                 + ", ".join(result.get("runtime_pending") or []) + ". 승인하면 머지되고 runtime_pending 으로 남아 "
+                 "툴체인 있는 기기에서 나중에 검증한다 (config verify.require_runtime 으로 막을 수 있다)")
     else:
         A.append("- 결론: loop — 위 [ ] 항목이 다음 착수 프롬프트에 인계된다")
     L += A

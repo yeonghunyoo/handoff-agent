@@ -15,6 +15,7 @@ from . import api, checks, derive, design, flow, gen, git, infra, leaks, reports
 
 DRAFT = "spec.draft.json"
 LAST = "last-verify.json"
+PASSING = ("pass", "pass_static")   # ship 으로 가는 판정 — pass_static 은 런타임 증거 없는 역할이 남은 통과
 
 
 def _refuse(msg, **extra):
@@ -376,7 +377,7 @@ def review(root, approver=None):
     if not git.has_commits(root):
         git.run(root, "commit", "--allow-empty", "-q", "-m", "handoff: init")
     git.commit_paths(root, f"handoff: 계약 v{version} 확정 (지문 {st['fingerprint']})",
-                     util.DESIGN_DIR, util.API_DIR, util.DOCS_DIR, ".gitignore", "CLAUDE.md")
+                     util.DESIGN_DIR, util.API_DIR, util.DOCS_DIR, ".gitignore", "CLAUDE.md", util.SPEC_SEED)
     _save(root, st, "locked", version=version, hash=st["fingerprint"])
     cfg, st = _st(root)
     _docs(root, cfg, st)
@@ -416,6 +417,9 @@ def build(root):
     if why:
         return _refuse(why)
     roles = util.active_roles(root)
+    handoff = util.read_json(util.ho(root, util.HANDOFF))
+    if handoff and handoff.get("version") != st["version"]:
+        handoff = None                                    # 다른 계약의 인계는 낡았다
     if st.get("roles"):
         pending = [r for r in st["roles"] if r not in st["reports"]]
         info = {}
@@ -424,7 +428,9 @@ def build(root):
             info[r] = ("(워크트리 없음)" if not os.path.isdir(wt)
                        else git.run(wt, "status", "--porcelain", check=False).stdout.strip()[:1500])
         plan = _dispatch_plan(cfg, pending)
-        return {"ok": True, "resume": True, "pending": pending, "worktrees": info,
+        t = checks.targets(root)
+        prompts = {r: reports.kickoff(root, cfg, r, st, t, handoff) for r in pending}   # 직렬 착수의 다음 역할도 여기서 받는다
+        return {"ok": True, "resume": True, "pending": pending, "worktrees": info, "prompts": prompts,
                 "dispatch": plan,
                 "message": (f"이미 착수된 루프다 — 재착수가 아니라 이어간다. 리포트 미제출: {', '.join(pending) or '없음'}. "
                             + _dispatch_note(plan))}
@@ -433,9 +439,6 @@ def build(root):
         return _refuse("본선 작업트리에 미커밋 변경이 있다 — 워크트리가 낡은 계약을 물려받는다: " + ", ".join(dirty[:5]))
     t = checks.targets(root)
     files = gen.expected(root, cfg, st["version"], st["manifest"], t["routes"])
-    handoff = util.read_json(util.ho(root, util.HANDOFF))
-    if handoff and handoff.get("version") != st["version"]:
-        handoff = None                                    # 다른 계약의 인계는 낡았다
     trees, errs = {}, {}
     with futures.ThreadPoolExecutor(max_workers=len(roles)) as ex:
         fs = {ex.submit(_prepare_worktree, root, r, files, st["version"]): r for r in roles}
@@ -555,7 +558,7 @@ def verify(root):
     util.write_json(util.ho(root, LAST), result)
     doc = reports.verify_doc(root, result, st["version"])
     page = reports.screens_page(root, st, roles)
-    if result["verdict"] == "pass":
+    if result["verdict"] in PASSING:
         st["phase"] = "ship"
     else:
         score.write_handoff(root, result, st["version"])
@@ -569,12 +572,16 @@ def verify(root):
     proposals = [p for e in result["roles"].values() for p in ((e.get("report") or {}).get("proposals") or [])]
     if result["verdict"] == "pass":
         nxt = "⑦ ship — 사람 승인 뒤 본선 머지."
+    elif result["verdict"] == "pass_static":
+        nxt = ("⑦ ship — 정적 검사 통과, 런타임 미검증 역할: " + ", ".join(result["runtime_pending"])
+               + ". 승인하면 머지되고 runtime_pending 으로 남는다.")
     elif proposals:
         nxt = ("계약 수정 제안이 있다 — 사람에게 보이고, 수용하면 back(to='api' 또는 'import') 로 계약을 고친다. "
                "아니면 build 로 재착수한다 (인계 자동 포함).")
     else:
         nxt = "build 로 재착수한다 (인계 자동 포함)."
     return {"ok": True, "verdict": result["verdict"], "score": result["score"], "threshold": result["threshold"],
+            "runtime_pending": result["runtime_pending"],
             "blockers": result["blockers"], "components": result["components"], "parity": result["parity"], "parity_web": result.get("parity_web") or [],
             "proposals": proposals, "doc": doc, "screens_page": page, "checklist": cl,
             "message": (f"점수 {result['score']}/{result['threshold']} → {result['verdict']}. "
@@ -593,15 +600,22 @@ def ship(root, approver=None):
     roles = st.get("roles") or util.active_roles(root)
     result = score.evaluate(root, cfg, roles, st["version"])         # 저장값을 믿지 않는다 — 다시 잰다
     util.write_json(util.ho(root, LAST), result)
-    if result["verdict"] != "pass":
+    if result["verdict"] not in PASSING:
         score.write_handoff(root, result, st["version"])
         st["phase"], st["roles"], st["reports"] = "build", [], []
         _save(root, st, "verified", score=result["score"], verdict="loop", blockers=len(result["blockers"]))
         return _refuse(f"재검사 결과 pass 가 아니다 (점수 {result['score']}) — build 로 돌아간다.\n"
                        + "\n".join(f"  × {b}" for b in result["blockers"]))
+    pending_rt = result["runtime_pending"]
+    if pending_rt and cfg["verify"].get("require_runtime"):
+        return _refuse("런타임 증거가 없는 역할이 있어 머지할 수 없다 (config verify.require_runtime): " + ", ".join(pending_rt)
+                       + "\n툴체인이 있는 기기에서 빌드·테스트를 돌려 리포트하거나, require_runtime 을 끄고 runtime_pending 으로 남긴다.")
     items = score.exceptions(result)
-    prompt = (f"완료 승인 — 계약 v{st['version']} [지문 {st['fingerprint']}] · 점수 {result['score']}. "
+    prompt = (f"완료 승인 — 계약 v{st['version']} [지문 {st['fingerprint']}] · 점수 {result['score']} · 판정 {result['verdict']}. "
               "승인하면 구현 브랜치를 본선에 머지합니다.")
+    if pending_rt:
+        prompt += ("\n! 런타임 미검증 역할: " + ", ".join(pending_rt)
+                   + " — 이 기기에서 빌드·테스트를 돌리지 못했습니다. 머지 뒤 runtime_pending 으로 남고, 툴체인 있는 기기에서 검증합니다.")
     if items:
         prompt += "\n함께 승인되는 예외 항목:\n" + "\n".join(f"  · {i}" for i in items[:25])
     page = os.path.join(root, util.DOCS_DIR, reports.SCREENS_DIR, "index.html")
@@ -628,11 +642,14 @@ def ship(root, approver=None):
                 return _refuse(f"머지 실패 — 수동 해소가 필요하다: {e}")
     git.remove_worktrees(root, roles)
     st["phase"] = "done"
-    _save(root, st, "shipped", merges=merges, exceptions=items, version=st["version"])
+    st["runtime_pending"] = pending_rt
+    _save(root, st, "shipped", merges=merges, exceptions=items, version=st["version"], runtime_pending=pending_rt)
     cfg, st = _st(root)
     _docs(root, cfg, st)
-    return {"ok": True, "approved": True, "merges": merges,
-            "message": f"완료 — {len(merges)}개 브랜치를 본선에 머지했다. 새 요구는 import_design 또는 spec_save 로 새 사이클을 연다."}
+    return {"ok": True, "approved": True, "merges": merges, "runtime_pending": pending_rt,
+            "message": f"완료 — {len(merges)}개 브랜치를 본선에 머지했다."
+                       + (f" 런타임 미검증: {', '.join(pending_rt)} (툴체인 있는 기기에서 검증한다)." if pending_rt else "")
+                       + " 새 요구는 import_design 또는 spec_save 로 새 사이클을 연다."}
 
 
 # 도구 호출 하나 = git 읽기 캐시 수명

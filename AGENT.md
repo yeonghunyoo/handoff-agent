@@ -1,7 +1,8 @@
 # 원칙 — 이 리포가 지키는 것
 
 Claude Design 핸드오프 패키지를 계약으로 받아 iOS · Android · web · backend 를 역할별 워크트리에서 만들고(기본 직렬), 서버가 실측한 것만
-사람 승인 뒤 본선에 올린다. 진입은 `/handoff` 하나, 단계는 MCP 서버가 강제한다.
+사람 승인 뒤 본선에 올린다. 진입은 `/handoff`(MCP `advance`) 와 터미널 `run.py run` 둘이고, 둘 다 같은 그래프(`graph.py`)를 돈다.
+흐름의 정본은 그래프다 — LLM 과 사람은 그래프가 멈춘 지점(과제 · 승인)만 채운다.
 
 ```
 import → spec → api → review ✋ → build → verify ⇄ loop → ship ✋ → done
@@ -24,6 +25,10 @@ approve 류 인자는 없다 — 에이전트가 인자에 넣을 수 있는 것
 
 서버: 계약 소비(`API-xx` `SCR-xx`) · 하드코딩 · iOS↔Android 파리티(web 이 있으면 web↔모바일 합집합을 따로) · 테스트 우회/출처/계약 접촉 · 시크릿(코드·
 민감 파일·커밋 이력) · 보호 구역 변경 · 담당 밖 쓰기. 리포트의 자기신고는 참고 자료다. 판정 근거는 잰 것뿐이다.
+
+검사는 두 층이다. **static**(위 전부 — 어디서든 잰다)과 **runtime**(서버가 돌린 테스트 · 빌드 성공 — 툴체인 있는 기기에서만).
+static 만 통과하면 판정은 `pass_static` 이고 ship 은 그 역할을 `runtime_pending` 으로 남긴다 — 툴체인 없는 기기에서 UI 작업을 이어가되
+런타임 미검증을 숨기지 않는다. 툴체인 없는 기기의 착수 프롬프트는 빌드를 시도하지 말고 `build.ok=null` 로 보고하라고 지시한다.
 
 ## 3. 저장값을 믿지 않는다
 
@@ -66,7 +71,8 @@ ID(`W1` `C2` `S1`…)로 인용된다. 서버 거부 메시지는 같은 ID 를 
 | `server/handoff/infra.py` | 인프라 후보 카탈로그 (규모 · 조합 · 요금 페이지 출처) — 규모가 먼저다: 규모별 후보 `SHORTLIST` 4~5개만 표에 오르고, 요금은 스킬이 그 후보의 페이지만 매번 새로 읽어 `infra.pricing` 으로 저장, 내장 구간은 폴백. 고르는 것은 사람 |
 | `server/handoff/reports.py` | 착수 프롬프트 · md · 채팅 요약 표(summary) · 정합성 체크리스트(checklist) · 화면 대조 |
 | `server/handoff/tools.py` | 도구 (MCP 무관) |
-| `server/handoff/server.py` | MCP 계층 — `mcp` 를 import 하는 유일한 파일 |
+| `server/handoff/graph.py` | LangGraph 상태기계 — 노드가 tools.py 를 부른다. 멈춤은 `task`(LLM 과제 → `submit`) 와 `approval`(사람 → approver 콜백) 둘. 체크포인트 `.handoff/graph.sqlite`. `langgraph` 를 import 하는 유일한 파일 |
+| `server/handoff/server.py` | MCP 계층 — `mcp` 를 import 하는 유일한 파일. `advance`/`submit` 이 그래프를 끈다 |
 | `hooks/guard.py` | PreToolUse 경보 (stdlib) |
 | `agents/*-builder.md` · `skills/handoff/` | 구현 에이전트 정의(본문 = 플랫폼 번역 플레이북 · 스토어 제출 규칙) · 진입 스킬 |
 | `tests/` | 임시 픽스처로 도구 자신을 검사 |
@@ -76,10 +82,10 @@ ID(`W1` `C2` `S1`…)로 인용된다. 서버 거부 메시지는 같은 ID 를 
 - 승인 도구에 approve·yes·force 류 인자 · 사람 대신 승인
 - 리포트·저장값을 판정에 쓰기 (다시 잰다)
 - 정본에서 재계산되지 않는 디자인 중간 표현 만들기 (정본은 `design/*.html`, 파생은 `derive.py` 만)
-- `server/` 밖에서 `mcp` import · 훅에서 서버 import
+- `server/` 밖에서 `mcp`·`langgraph` import · 훅에서 서버 import · 그래프 노드 안에서 부작용(도구 호출) 뒤에 interrupt 두기 (재개 때 노드가 처음부터 다시 돈다 — 묻는 노드와 실행 노드를 나눈다)
 - 침묵하는 검사 (못 잰 것은 "못 잼"으로 보인다)
 - 사람용 문서를 손으로 쓰기
 
 ## 검증
 
-`bash tests/run.sh` — 서버·훅을 고쳤으면 전체. 문서만 고쳤으면 돌릴 이유가 없다.
+`bash tests/run.sh` — 서버·훅을 고쳤으면 전체(순수 함수 · MCP 계층 · 그래프 계층). 문서만 고쳤으면 돌릴 이유가 없다.

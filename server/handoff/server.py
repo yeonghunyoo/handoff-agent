@@ -13,7 +13,7 @@ import time
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import BaseModel
 
-from . import leaks, tools
+from . import graph, leaks, tools
 
 
 def _out(r):
@@ -25,8 +25,8 @@ ROOT = os.path.abspath(os.environ.get("HANDOFF_ROOT") or os.getcwd())
 mcp = MCPServer(
     "handoff",
     instructions=("Claude Design 핸드오프 패키지로 iOS · Android · web · backend 를 한 번에 만드는 워크플로 서버. "
-                  "순서는 status 가 안내한다: 패키지 등록 → 스펙 → openapi → 계약 확정(사람) → 구현 → 검사 → "
-                  "완료 승인(사람). 뒤로 가려면 back."),
+                  "advance 가 흐름을 끈다: 응답의 pending 과제를 수행해 submit 으로 내고, 사람 승인은 advance 안에서 뜬다. "
+                  "순서: 패키지 등록 → 스펙 → openapi → 계약 확정(사람) → 구현 → 검사 → 완료 승인(사람). 뒤로 가려면 back."),
 )
 
 
@@ -79,7 +79,34 @@ async def _approve_then(ctx, run):
 @mcp.tool()
 def status() -> dict:
     """현재 단계 · 다음 행동 · 경고. 무엇을 할지 모르면 항상 이것부터."""
-    return _out(tools.status(ROOT))
+    out = tools.status(ROOT)
+    p = graph.pending(ROOT)
+    if p:
+        out["pending"] = p if p.get("kind") == "task" else {"kind": "approval", "action": p.get("action")}
+    return _out(out)
+
+
+@mcp.tool()
+async def advance(ctx: Context) -> dict:
+    """그래프를 다음 멈춤 지점까지 돌린다 — 흐름의 정본. 응답이 `pending`(kind=task) 이면 그 과제를 수행하고 submit(payload)
+    으로 낸다. 사람 승인 지점(review · ship)에서는 여기서 elicitation 이 뜬다 — 인자로 승인할 수 없다. 미배선이면 setup 까지 한다."""
+    r = graph.advance(ROOT)
+    if not r.get("pending_human"):
+        return _out(r)
+    decision = await _elicit(ctx, r["approval_prompt"])
+    if "no_channel" in decision:
+        r = dict(r, no_channel=decision["no_channel"])
+        r["message"] = (f"{decision['no_channel']}. 반려로 기록하지 않았다.\n"
+                        "이 클라이언트에서는 승인할 수 없다 — 사람이 대화형 세션에서 다시 부르거나 아래 명령을 터미널에서 직접 실행한다.\n\n"
+                        + r["message"])
+        return _out(r)
+    return _out(graph.advance(ROOT, approver=lambda m, i: decision))
+
+
+@mcp.tool()
+def submit(payload: dict) -> dict:
+    """advance 가 준 과제(pending.task)의 답을 낸다 — payload 모양은 과제의 `submit` 에 적혀 있다. 승인 멈춤은 재개하지 않는다."""
+    return _out(graph.submit(ROOT, payload))
 
 
 @mcp.tool()
