@@ -264,10 +264,11 @@ def make_bundle(path, states=("isOnboarding", "isHome", "isStats")):
     tpl = (f'<!DOCTYPE html><html><head><script src="{rt_id}"></script></head><body><x-dc><helmet><style>'
            f':root{{--color-accent:#c67139;--space-4:17.6px}} @font-face{{src:url("{font_id}")}}</style></helmet>'
            f'<x-import from="{jsx_id}#/ios-frame.jsx">{body}</x-import></x-dc></body></html>')
+    tpl_js = json.dumps(tpl).replace("</", "<\\/")   # 실제 내보내기처럼 </ 를 이스케이프 (f-string 밖에서 — 3.12 미만은 표현식 안 백슬래시 불가)
     html = ('<!DOCTYPE html><html><head><title>Bundled Page</title></head><body>'
             f'<script type="__bundler/manifest">{json.dumps(man)}</script>'
             '<script type="__bundler/ext_resources">' + json.dumps([{"id": "https://unpkg.com/react@18/umd/react.production.min.js", "uuid": react_id}]) + '</script>'
-            f'<script type="__bundler/template">{json.dumps(tpl).replace("</", "<\\/")}</script></body></html>')   # 실제 내보내기처럼 </ 를 이스케이프
+            f'<script type="__bundler/template">{tpl_js}</script></body></html>')
     with open(path, "w") as f:
         f.write(html)
     return path
