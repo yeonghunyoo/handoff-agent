@@ -581,7 +581,7 @@ def verify(root):
     else:
         nxt = "build 로 재착수한다 (인계 자동 포함)."
     return {"ok": True, "verdict": result["verdict"], "score": result["score"], "threshold": result["threshold"],
-            "runtime_pending": result["runtime_pending"],
+            "runtime_pending": result["runtime_pending"], "parity_snapshots": result.get("parity_snapshots") or {},
             "blockers": result["blockers"], "components": result["components"], "parity": result["parity"], "parity_web": result.get("parity_web") or [],
             "proposals": proposals, "doc": doc, "screens_page": page, "checklist": cl,
             "message": (f"점수 {result['score']}/{result['threshold']} → {result['verdict']}. "
