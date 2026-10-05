@@ -21,6 +21,7 @@ import contextlib
 import operator
 import os
 import subprocess
+from concurrent import futures
 from typing import Annotated, TypedDict
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -31,7 +32,9 @@ from . import flow, tools, util
 
 DB = "graph.sqlite"
 THREAD = "handoff"
-CFG = {"configurable": {"thread_id": THREAD}, "recursion_limit": 500}
+# recursion_limit: advance 한 번이 합법적으로 밟는 홉은 10 안팎이다 (check ↔ 노드 왕복). 허브 구조는 phase 가 안 바뀌면 check ↔ 같은 노드를
+# 영원히 돌 수 있으므로, 그런 스핀이 전체 검사 수백 번이 아니라 수십 홉 안에 GraphRecursionError 로 끊기게 낮게 둔다.
+CFG = {"configurable": {"thread_id": THREAD}, "recursion_limit": 60}
 SPEC_SEED = util.SPEC_SEED           # 레포 루트 handoff.spec.json — 커밋해 두면 인터뷰 없이 스펙이 채워진다 (빈 항목만 묻는다)
 OVERLAYS = ("sheet", "modal", "popover")
 
@@ -42,6 +45,7 @@ class State(TypedDict, total=False):
     last: dict                          # 마지막 도구 응답 (요약)
     needs_confirm: bool                 # import 뒤 사람이 화면·컴포넌트를 확정해야 하는가
     dispatch: dict                      # build 가 정한 이번 착수 {roles, prompts} — dispatch 노드가 과제로 넘긴다
+    builders: list                      # builder.command 로 서버가 직접 띄운 빌더의 실행 기록 — verify 가 last 를 덮어도 남는다
     log: Annotated[list, operator.add]
 
 
@@ -147,10 +151,13 @@ def n_api(s):
     st = tools.status(root)
     payload = _task("api_submit",
                     "design/ 의 화면 HTML · derived/entities.json · navigation.json 을 읽고 각 화면이 필요로 하는 데이터·동작으로 "
-                    "openapi.yaml 을 초안한다. operationId 는 lowerCamel (앱이 부르는 ApiRoutes.<operationId>). 자리표시 외 시크릿 금지."
+                    "openapi.yaml 을 낸다. draft 가 있으면 백지가 아니라 그것(컬렉션별 CRUD 골격)을 출발점으로 — 화면이 쓰지 않는 라우트는 지우고, "
+                    "화면이 필요로 하는데 없는 라우트(검색·집계·동작)를 더한다. operationId 는 lowerCamel (앱이 부르는 ApiRoutes.<operationId>). "
+                    "자리표시 외 시크릿 금지."
                     + (f"\n직전 제출 거부: {last.get('message')}" if last.get("ok") is False else ""),
                     {"openapi": "openapi.yaml 본문 (문자열)"},
-                    screens=(st.get("design") or {}).get("screens"), entities="design/derived/entities.json")
+                    screens=(st.get("design") or {}).get("screens"), entities="design/derived/entities.json",
+                    draft=tools.api_draft(root))
     r = tools.api_submit(root, (payload or {}).get("openapi") if isinstance(payload, dict) else "")
     return {"last": _slim(r), "log": ["api"]}
 
@@ -195,8 +202,10 @@ def n_build(s):
         return {"last": _slim(r), "dispatch": None, "log": ["build:nothing"]}
     cmd = (cfg.get("builder") or {}).get("command") or ""
     if cmd:
-        outs = [_run_builder(root, cfg, cmd, role, r["prompts"][role]) for role in roles]
-        return {"last": {"ok": all(o["ok"] for o in outs), "builders": outs}, "dispatch": None, "log": [f"build:{','.join(roles)}"]}
+        with futures.ThreadPoolExecutor(max_workers=len(roles)) as ex:        # parallel 이면 동시에, serial 이면 roles 가 하나
+            outs = list(ex.map(lambda role: _run_builder(root, cfg, cmd, role, r["prompts"][role]), roles))
+        return {"last": {"ok": all(o["ok"] for o in outs), "builders": outs}, "builders": outs, "dispatch": None,
+                "log": [f"build:{','.join(roles)}"]}
     return {"last": _slim(r), "dispatch": {"roles": roles, "prompts": {ro: r["prompts"][ro] for ro in roles}},
             "log": [f"build:{','.join(roles)}"]}
 
@@ -216,7 +225,7 @@ def n_dispatch(s):
     _task("run_builder",
           f"역할 {', '.join(roles)} 을(를) 착수한다. 각 역할을 <role>-builder 서브에이전트로 띄우고 prompts 의 프롬프트를 "
           "번역·요약 없이 그대로 준다. 빌더가 precheck → report 를 마치면(report 도구) 빈 객체를 낸다. "
-          "직렬이면 여기 적힌 역할 하나뿐이다 — 다음 역할은 advance 가 다시 준다.",
+          "병렬(기본)이면 여기 적힌 역할 전부를 동시에 띄운다. 직렬이면 하나뿐이고 다음 역할은 advance 가 다시 준다.",
           {},
           roles=roles, agents={ro: f"{ro}-builder" for ro in roles},
           worktrees={ro: util.worktree(root, ro) for ro in roles}, prompts=d.get("prompts") or {})
@@ -374,12 +383,13 @@ def advance(root, approver=None, resume=None):
             out = app.invoke({"root": root, "log": []}, CFG)
         nxt = _pending(app)
         phase = flow.current(root, util.load_config(root))["phase"]
+        extra = {"builders": out["builders"]} if out.get("builders") else {}
         if nxt and nxt.get("kind") == "task":
-            return _task_out(root, nxt, last=out.get("last"))
+            return {**_task_out(root, nxt, last=out.get("last")), **extra}
         if nxt and nxt.get("kind") == "approval":
             return {"ok": True, "phase": phase, "pending_human": True, "approval_prompt": nxt["prompt"], "action": nxt["action"],
-                    "last": out.get("last"), "message": f"{flow.LABELS[phase]} — 사람 승인 대기. advance 를 다시 부르면 승인 창이 뜬다."}
-        return {"ok": True, "phase": phase, "pending": None, "last": out.get("last"),
+                    "last": out.get("last"), **extra, "message": f"{flow.LABELS[phase]} — 사람 승인 대기. advance 를 다시 부르면 승인 창이 뜬다."}
+        return {"ok": True, "phase": phase, "pending": None, "last": out.get("last"), **extra,
                 "message": f"{flow.LABELS[phase]}. " + str((out.get("last") or {}).get("message") or "")}
 
 

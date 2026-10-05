@@ -283,6 +283,12 @@ def _covered(name, topics):
     return any(t and (t.lower() in n or n in t.lower()) for t in topics)
 
 
+def unconsumed(cons, approved_topics):
+    """[R4] 소비 안 된 항목 중 승인된 발산(spec.divergences)으로 덮이지 않은 것 — report 접수 조건과 precheck 가 같이 쓴다."""
+    return [i["id"] + " " + (i["const"] or i["label"]) for i in cons["items"]
+            if not i["used"] and not (_covered(i["name"], approved_topics) or _covered(i["label"], approved_topics))]
+
+
 def union_eval(evals, name="mobile"):
     """여러 앱의 소비·토큰 합집합을 하나의 가짜 평가로 — web↔모바일 파리티의 비교 상대. 항목은 '하나라도 썼으면 썼다'."""
     items = {}

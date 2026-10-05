@@ -4,6 +4,7 @@
 """
 import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +40,10 @@ def scenario_interactive():
     pkg = cases.make_package(os.path.join(os.path.dirname(root), "pkg"))
     r = graph.advance(root)
     check("시작: import 과제", task(r) == "import_design" and r["phase"] == "import", r)
+    cfg = util.load_config(root)
+    check("setup 기본 착수는 병렬", cfg["dispatch"]["mode"] == "parallel", cfg["dispatch"])
+    cfg["dispatch"]["mode"] = "serial"                 # 이 시나리오는 직렬 경로(한 번에 한 역할)를 본다
+    util.write_config(root, cfg)
     check("승인 아닌데 approver 줘도 과제 그대로", task(graph.advance(root, approver=cases.APPROVE)) == "import_design")
     r = graph.submit(root, {"path": pkg})
     check("import → spec 과제 (확정 불필요한 패키지)", task(r) == "spec" and r["phase"] == "spec", r)
@@ -46,7 +51,8 @@ def scenario_interactive():
     r = graph.submit(root, {"platforms": ["ios", "android"]})
     check("부분 답 → 다시 spec 과제", task(r) == "spec", r)
     r = graph.submit(root, {k: v for k, v in cases.SPEC.items() if k != "platforms"})
-    check("스펙 완성 → api 과제", task(r) == "api_submit" and r["phase"] == "api", r)
+    check("스펙 완성 → api 과제 · draft 필드 (컬렉션 없는 패키지라 None)", task(r) == "api_submit" and r["phase"] == "api"
+          and "draft" in r["pending"] and r["pending"]["draft"] is None, r)
     r = graph.submit(root, {"openapi": "nope: 1"})
     check("깨진 openapi → 거부 사유와 함께 다시 api 과제", task(r) == "api_submit" and "직전 제출 거부" in r["pending"]["message"], r)
     r = graph.submit(root, {"openapi": cases.OPENAPI})
@@ -73,7 +79,7 @@ def scenario_interactive():
         assert rep["ok"], rep["message"]
         r = graph.submit(root, {})
     check("직렬 착수 순서 backend → ios → android", seen == ["backend", "ios", "android"], seen)
-    check("마지막 report 뒤 verify 자동 → ship 승인 대기", r.get("pending_human") and r["action"] == "ship", r)
+    check("마지막 report 뒤 submit → check 가 verify 로 derive → 한 번 돌고 ship 승인 대기", r.get("pending_human") and r["action"] == "ship", r)
     r = graph.advance(root, approver=cases.APPROVE)
     check("ship 승인 → done · 머지", r["ok"] and r["phase"] == "done" and not r.get("pending"), r)
     st = util.read_state(root)
@@ -98,10 +104,16 @@ def scenario_seed_and_command():
     r = graph.submit(root, {"path": pkg})
     check("seed 가 인터뷰를 대신 → 바로 api 과제", task(r) == "api_submit" and r["phase"] == "api", r)
     r = graph.submit(root, {"openapi": cases.OPENAPI})
-    r = graph.advance(root, approver=cases.APPROVE)
-    check("서버가 빌더 셋을 직접 띄움 → verify 자동 → ship 승인 대기", r.get("pending_human") and r["action"] == "ship", r)
-    builders = (r.get("last") or {}).get("builders") or []
-    check("빌더 실행 기록 3개 · 모두 성공", len(builders) == 3 and all(b["ok"] for b in builders), r.get("last"))
+    os.environ["HANDOFF_FAKE_SLEEP"] = "1.0"           # 빌더마다 1초 일한다 — 동시 실행이면 셋의 구간이 겹친다
+    try:
+        r = graph.advance(root, approver=cases.APPROVE)
+    finally:
+        os.environ.pop("HANDOFF_FAKE_SLEEP", None)
+    check("서버가 빌더 셋을 직접 띄움 → check 가 verify 로 derive → ship 승인 대기", r.get("pending_human") and r["action"] == "ship", r)
+    builders = r.get("builders") or []
+    check("빌더 실행 기록 3개 · 모두 성공 (동시 report 에도 리포트 유실 없음)", len(builders) == 3 and all(b["ok"] for b in builders), r.get("last"))
+    spans = [(float(m.group(1)), float(m.group(2))) for b in builders for m in [re.search(r"start=([\d.]+) end=([\d.]+)", b["tail"])] if m]
+    check("빌더 셋이 동시에 돌았다 (시작·종료 구간이 겹친다)", len(spans) == 3 and max(s for s, _ in spans) < min(e for _, e in spans), spans)
     r = graph.advance(root, approver=cases.APPROVE)
     check("done", r["ok"] and r["phase"] == "done", r)
 

@@ -97,7 +97,11 @@ async def scenario():
             cases.implement(root)
             for role in ("backend", "ios", "android"):
                 r = await call("report", role=role, report=cases.report())
-            check("report → verify pass", r["ok"] and r["verify"]["verdict"] == "pass", r.get("verify", {}).get("blockers"))
+            check("report: 마지막 접수 → remaining 비어 있음", r["ok"] and r["remaining"] == [], r)
+            r = await call("status")
+            check("status: 접수 셋이 derive 되고 phase 는 verify", r["reports"] == ["backend", "ios", "android"] and r["phase"] == "verify", (r.get("reports"), r.get("phase")))
+            r = await call("verify")
+            check("verify pass", r["ok"] and r["verdict"] == "pass", r.get("blockers"))
             r = await call("ship")
             check("ship: 승인 → 머지", r["ok"] and r["approved"] and len(r["merges"]) == 3 and len(prompts) == 6, r)
             r = await call("status")

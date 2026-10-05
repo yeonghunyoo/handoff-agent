@@ -660,9 +660,16 @@ def test_happy_cycle():
     for role in ("backend", "ios"):
         r = tools.report(root, role, report())
         check(f"report: {role} 접수", r["ok"] and "Waiting on" in r["message"], r["message"])
+    state_before = open(util.ho(root, util.STATE)).read()
     r = tools.report(root, "android", report())
-    check("report: 마지막 접수가 verify 자동 실행", r["ok"] and r.get("verify") and r["verify"]["verdict"] == "pass", r.get("verify", {}).get("blockers"))
-    v = r["verify"]
+    check("report: 마지막 접수 — 결산은 주행자 몫 (응답에 verify 없음 · remaining 비어 있음)", r["ok"] and "verify" not in r and r["remaining"] == [], r)
+    check("report: state.json 을 건드리지 않는다", open(util.ho(root, util.STATE)).read() == state_before)
+    cur = flow.current(root, util.load_config(root))
+    check("report: 접수 목록은 파일에서 derive · 전부 있으면 phase 가 verify 로 보인다 (저장은 build 그대로)",
+          cur["reports"] == ["backend", "ios", "android"] and cur["phase"] == "verify" and util.read_state(root)["phase"] == "build", (cur["reports"], cur["phase"]))
+    check("report: verify 단계에서 build 는 거부", not tools.build(root)["ok"])
+    v = tools.verify(root)
+    check("verify: pass", v["ok"] and v["verdict"] == "pass", v.get("blockers"))
     check("verify: 점수·성분", v["score"] >= 85 and v["components"]["hardcodes"] == 0 and v["components"]["parity_gaps"] == 0, v["components"])
     check("verify: 테스트 계약 접촉 → 자기신고 채택", v["components"]["tests_source"]["ios"] == "self-reported", v["components"])
     check("verify: 문서", os.path.isfile(os.path.join(root, v["doc"])) and not os.path.exists(os.path.join(root, "docs", "handoff-dashboard.html")))
@@ -693,22 +700,36 @@ def test_loop_and_handoff():
     root = to_locked(make_repo())
     cfg = util.load_config(root)
     cfg["score"]["threshold"] = 97                  # 감점이 임계치를 넘게 — 루프를 확실히 돌린다
+    cfg["verify"]["require_complete"] = False        # R4 를 끄고 갭이 verify 까지 가게 — 인계·파리티 경로를 본다
     util.write_config(root, cfg)
     tools.build(root)
     implement(root, hardcode=True, skip_screen=("android", "settings"))
     tools.report(root, "backend", report())
     tools.report(root, "ios", report())
-    r = tools.report(root, "android", report(not_done=["SCR-03 settings — ran out of time"]))
-    v = r["verify"]
+    assert tools.report(root, "android", report(not_done=["SCR-03 settings — ran out of time"]))["ok"]
+    v = tools.verify(root)
     check("loop: 파리티 갭 (android 만 settings 안 함)", any(g["missing"] == "android" and "settings" in g["id"] for g in v["parity"]), v["parity"])
     check("loop: 하드코딩 2 (hex + padding)", v["components"]["hardcodes"] == 2, v["components"])
     st = flow.current(root, util.load_config(root))
     ho = util.read_json(util.ho(root, util.HANDOFF))
     check("loop: 인계 파일", ho and ho["roles"]["android"]["unused"] and ho["roles"]["ios"]["hardcodes"]
           and any("settings" in x for x in ho["roles"]["android"]["parity"]), ho and ho["roles"])
-    check("loop: verdict loop → build", v["verdict"] == "loop" and st["phase"] == "build" and st["roles"] == [], (v["verdict"], v["score"]))
+    check("loop: verdict loop → build · 역할은 유지, 깨끗한 backend 의 리포트는 보존", v["verdict"] == "loop" and st["phase"] == "build"
+          and st["roles"] == ["backend", "ios", "android"] and st["reports"] == ["backend"], (v["verdict"], st["roles"], st["reports"]))
     r = tools.build(root)
+    check("loop: 재착수는 갭 있는 역할만 (ios 하드코딩 · android 갭)", r["resume"] and sorted(r["prompts"]) == ["android", "ios"]
+          and r["dispatch"]["order"] == ["ios", "android"], (r.get("pending"), r["dispatch"]))
+    check("loop: 재착수 역할의 리포트 파일만 지워진다", os.path.isfile(util.ho(root, util.REPORTS, "backend.json"))
+          and not os.path.exists(util.ho(root, util.REPORTS, "ios.json")) and not os.path.exists(util.ho(root, util.REPORTS, "android.json")))
     check("loop: 재착수 프롬프트에 인계", "Carried from v1" in r["prompts"]["android"] and "Parity gaps" in r["prompts"]["android"], r["prompts"]["android"][-1500:])
+    # 재착수한 둘만 다시 report 하면 verify 가 전체(backend 포함)를 다시 잰다
+    implement(root, roles=("ios", "android"))
+    tools.report(root, "ios", report())
+    assert tools.report(root, "android", report())["ok"]
+    v2 = tools.verify(root)
+    last = util.read_json(util.ho(root, "last-verify.json"))
+    check("loop: 둘만 다시 내도 verify 는 세 역할 전체 · pass", set(last["roles"]) == {"backend", "ios", "android"} and v2["verdict"] == "pass",
+          (list(last["roles"]), v2["verdict"], v2["blockers"], v2["components"]))
     check("loop: 워크트리는 남아 이어간다", os.path.isfile(os.path.join(wt(root, "ios"), "apps/ios/Main.swift")))
     # 승인된 발산은 갭에서 빠진다
     root2 = to_locked(make_repo(), spec={**SPEC, "divergences": ["settings"]})
@@ -716,7 +737,8 @@ def test_loop_and_handoff():
     implement(root2, skip_screen=("android", "settings"))
     for role in ("backend", "ios"):
         tools.report(root2, role, report())
-    v = tools.report(root2, "android", report())["verify"]
+    assert tools.report(root2, "android", report())["ok"]
+    v = tools.verify(root2)
     check("loop: 승인된 발산은 파리티 갭 아님", v["components"]["parity_gaps"] == 0, v["parity"])
 
 
@@ -728,7 +750,8 @@ def test_evidence():
     static_rep = report(build={"ok": None, "seconds": 0}, tests={"passed": 0, "failed": 0, "seconds": 0})
     tools.report(root, "backend", report())
     tools.report(root, "ios", static_rep)
-    v = tools.report(root, "android", static_rep)["verify"]
+    assert tools.report(root, "android", static_rep)["ok"]
+    v = tools.verify(root)
     check("evidence: 판정 pass_static · runtime_pending=[ios, android]", v["verdict"] == "pass_static" and v["runtime_pending"] == ["ios", "android"],
           (v["verdict"], v["runtime_pending"], v["blockers"]))
     check("evidence: 체크리스트에 미검증 표시", "런타임 **미검증**" in v["checklist"]["markdown"] and "pass_static" in v["checklist"]["markdown"])
@@ -764,7 +787,8 @@ def test_parity_snapshot():
     tools.build(root)
     implement(root, roles=("backend", "ios"))
     tools.report(root, "backend", report())
-    v = tools.report(root, "ios", report())["verify"]
+    assert tools.report(root, "ios", report())["ok"]
+    v = tools.verify(root)
     check("snapshot: iOS 만 → 파리티 갭 없음 · pass", v["verdict"] == "pass" and v["parity"] == [] and v["parity_snapshots"] == {}, (v["verdict"], v["parity"]))
     snap = util.read_json(util.ho(root, score.EVIDENCE, "ios.json"))
     fp = util.fingerprint(root)
@@ -780,11 +804,13 @@ def test_parity_snapshot():
     check("snapshot: 지문은 그대로 (계약 v2)", util.fingerprint(root) == fp and flow.current(root, util.load_config(root))["version"] == 2)
     cfg = util.load_config(root)
     cfg["score"]["threshold"] = 97                  # 갭 하나의 감점이 임계치를 넘게 — 인계까지 확인한다
+    cfg["verify"]["require_complete"] = False        # R4 를 끄고 갭이 verify 의 스냅샷 대조까지 가게
     util.write_config(root, cfg)
     tools.build(root)
     implement(root, roles=("backend", "android"), skip_screen=("android", "settings"))
     tools.report(root, "backend", report())
-    v = tools.report(root, "android", report(not_done=["SCR-03 settings"]))["verify"]
+    assert tools.report(root, "android", report(not_done=["SCR-03 settings"]))["ok"]
+    v = tools.verify(root)
     gap = [g for g in v["parity"] if "settings" in g["id"]]
     check("snapshot: Android 만 돌려도 iOS 스냅샷과 대조 → settings 갭", gap and gap[0]["missing"] == "android" and gap[0]["done"] == "ios"
           and gap[0]["snapshot"] == "ios" and "ios" in v["parity_snapshots"], v["parity"])
@@ -794,11 +820,67 @@ def test_parity_snapshot():
     # 계약이 바뀌면 옛 스냅샷은 무시된다
     root2 = to_locked(make_repo(), spec={**SPEC, "platforms": ["android"]})
     util.write_json(util.ho(root2, score.EVIDENCE, "ios.json"), {**snap, "fingerprint": "000000000000"})
+    cfg2 = util.load_config(root2); cfg2["verify"]["require_complete"] = False; util.write_config(root2, cfg2)
     tools.build(root2)
     implement(root2, roles=("backend", "android"), skip_screen=("android", "settings"))
     tools.report(root2, "backend", report())
-    v = tools.report(root2, "android", report())["verify"]
+    assert tools.report(root2, "android", report())["ok"]
+    v = tools.verify(root2)
     check("snapshot: 다른 지문의 스냅샷은 무시", v["parity"] == [] and v["parity_snapshots"] == {}, v["parity"])
+
+
+def test_complete_and_draft():
+    """한 번에 쭉 — 리포트는 계약 항목을 전부 소비해야 접수된다 [R4] · 착수 기본은 병렬 · openapi 는 골격에서 출발한다."""
+    root = to_locked(make_repo())
+    b = tools.build(root)
+    check("parallel: 기본 착수가 병렬 · 역할 전부 한 번에", b["dispatch"]["mode"] == "parallel" and b["dispatch"]["order"] == ["backend", "ios", "android"]
+          and "병렬" in b["message"], b["dispatch"])
+    implement(root, skip_screen=("android", "settings"))
+    pre = tools.precheck(root, "android")
+    check("R4: precheck 가 complete=false · missing 에 settings", pre["passed"] and not pre["complete"] and any("settings" in m for m in pre["missing"])
+          and "INCOMPLETE" in pre["message"] and "R4" in pre["message"], (pre["complete"], pre["missing"], pre["message"][:200]))
+    check("R4: iOS 는 complete", tools.precheck(root, "ios")["complete"])
+    assert tools.report(root, "backend", report())["ok"]
+    assert tools.report(root, "ios", report())["ok"]
+    r = tools.report(root, "android", report(not_done=["SCR-03 settings"]))
+    check("R4: 안 소비한 항목이 있으면 리포트 거부 (not_done 으로도 못 넘긴다)", not r["ok"] and "R4" in r["message"] and "settings" in r["message"], r["message"][:300])
+    st = flow.current(root, util.load_config(root))
+    check("R4: 거부된 리포트는 기록되지 않는다", st["reports"] == ["backend", "ios"] and st["phase"] == "build", st["reports"])
+    r = tools.report(root, "android", report("blocked", blocked=[{"item": "SCR-03", "tried": "x", "error": "y"}]))
+    check("R4: status=blocked 는 예외로 접수", r["ok"] and r["accepted"], r.get("message"))
+    # 승인된 발산은 예외 — 같은 갭이지만 접수된다
+    root2 = to_locked(make_repo(), spec={**SPEC, "divergences": ["settings"]})
+    tools.build(root2)
+    implement(root2, skip_screen=("android", "settings"))
+    for role in ("backend", "ios"):
+        assert tools.report(root2, role, report())["ok"]
+    r = tools.report(root2, "android", report())
+    check("R4: spec.divergences 로 승인된 항목은 접수 · verify pass", r["ok"] and tools.verify(root2)["verdict"] == "pass", r.get("message"))
+    # 다 채우면 접수되고 verify 는 pass — 파리티 갭이 생길 수 없다
+    root3 = to_locked(make_repo())
+    tools.build(root3)
+    implement(root3)
+    for role in ("backend", "ios"):
+        assert tools.report(root3, role, report())["ok"]
+    assert tools.report(root3, "android", report())["ok"]
+    v = tools.verify(root3)
+    check("R4: 전부 소비 → 접수 · 파리티 갭 0 · pass", v["verdict"] == "pass" and v["parity"] == [], (v["verdict"], v["parity"]))
+    # openapi 골격 — entities.json 의 컬렉션마다 CRUD
+    root4 = make_repo()
+    d = os.path.join(root4, "design")
+    w(os.path.join(d, "forest.dc.html"), PROTO)
+    tools.import_design(root4, "design")
+    draft = tools.api_draft(root4)
+    names = [x["name"] for x in api.validate(draft)]
+    check("draft: 컬렉션(LAYERS · PRESETS)마다 CRUD 5개 · SLEEP_OPTS(스칼라 배열)는 제외 · validate 통과",
+          "listLayers" in names and "deleteLayer" in names and "createPreset" in names and len(names) == 10 and "Sleep" not in draft, names)
+    check("draft: 스키마에 첫 원소의 필드", "Preset:" in draft and "volumes:" in draft and "type: object" in draft, draft[-600:])
+    tools.spec_save(root4, SPEC)
+    st4 = tools.status(root4)
+    check("draft: api 단계의 status 에 api_draft + 경고 한 줄", st4["phase"] == "api" and st4["api_draft"] == draft and any("api_draft" in x for x in st4["warnings"]), st4["warnings"])
+    check("draft: 컬렉션 없는 패키지는 None", tools.api_draft(make_repo_spec_root()) is None)
+    r = tools.api_submit(root4, draft)
+    check("draft: 그대로 내도 접수된다", r["ok"], r.get("message"))
 
 
 def test_violations_and_secrets():
@@ -856,7 +938,8 @@ def test_tests_evidence():
     git.commit_all(t, "tests later")
     tools.report(root, "backend", report())
     tools.report(root, "android", report())
-    v = tools.report(root, "ios", report())["verify"]
+    assert tools.report(root, "ios", report())["ok"]
+    v = tools.verify(root)
     check("tests: 계약 안 건드린 스위트 → uncontracted", v["components"]["tests_source"]["ios"] == "uncontracted", v["components"])
     e = v and util.read_json(util.ho(root, tools.LAST))["roles"]["ios"]
     check("tests: 작성 순서 test-after", e["test_provenance"]["verdict"] == "test-after", e["test_provenance"])
@@ -929,7 +1012,8 @@ def test_screens_page():
             f.write(PNG)
     for role in ("backend", "ios"):
         tools.report(root, role, report())
-    v = tools.report(root, "android", report())["verify"]
+    assert tools.report(root, "android", report())["ok"]
+    v = tools.verify(root)
     check("shots: 페이지", v["screens_page"] and os.path.isfile(os.path.join(root, v["screens_page"])), v.get("screens_page"))
     html = open(os.path.join(root, v["screens_page"])).read()
     check("shots: 디자인 iframe + 두 앱 사진", "design/order-list.html" in html and "ios/orderList.png" in html and "android/orderList__dark.png" in html)
@@ -1102,11 +1186,12 @@ def test_web_role():
           and not any("@media" in h["text"] for h in pre["hardcodes"]), pre["hardcodes"])
     pre_ios = tools.precheck(root, "ios")
     check("web: iOS 검사는 CSS 를 안 읽는다", all(not h["file"].endswith(".css") for h in pre_ios["hardcodes"]) and pre_ios["consumption"]["rate"] == 100.0, pre_ios["hardcodes"])
-    util.write_config(root, {**util.DEFAULTS, "score": {**util.DEFAULTS["score"], "threshold": 99}})   # loop 을 강제해 인계를 본다
+    util.write_config(root, {**util.DEFAULTS, "score": {**util.DEFAULTS["score"], "threshold": 99},
+                             "verify": {**util.DEFAULTS["verify"], "require_complete": False}})   # loop 을 강제해 인계를 본다 (R4 는 끈다)
     for role in ("backend", "ios", "android"):
         assert tools.report(root, role, report())["ok"]
-    r = tools.report(root, "web", report())
-    v = r["verify"]
+    assert tools.report(root, "web", report())["ok"]
+    v = tools.verify(root)
     check("web: 임계 99 → loop", v["verdict"] == "loop", v["components"])
     check("web: iOS↔Android 파리티는 그대로 비어 있고 web↔모바일 갭이 따로", v["parity"] == [] and any(g["missing"] == "web" and "settings" in g["id"] and g["pair"] == "web↔mobile" for g in v["parity_web"]), v["parity_web"])
     check("web: 체크리스트에 web↔모바일 절", "**파리티 (web ↔ 모바일)**" in v["checklist"]["markdown"] and "iOS ↔ Android" not in v["checklist"]["markdown"], v["checklist"]["markdown"][-1200:])
@@ -1122,7 +1207,8 @@ def test_web_role():
     check("web-only: backend + web", set(r["prompts"]) == {"backend", "web"} and "Project structure: existing" in r["prompts"]["web"])
     implement(root2, roles=("backend", "web"))
     assert tools.report(root2, "backend", report())["ok"]
-    v = tools.report(root2, "web", report())["verify"]
+    assert tools.report(root2, "web", report())["ok"]
+    v = tools.verify(root2)
     check("web-only: 파리티 갭 0 · pass", v["verdict"] == "pass" and v["parity"] == [] and v["parity_web"] == [], v["components"])
     check("web-only: 요약 표 경고 (모바일 디자인 → web)", "플랫폼과 어긋난다" in tools.status(root2)["summary"]["markdown"])
     # 모바일만 — web 흔적 없음 (회귀)
@@ -1192,7 +1278,7 @@ def test_target_and_variants():
 
 
 TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle, test_evidence, test_parity_snapshot,
-         test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
+         test_complete_and_draft, test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks, test_security, test_web_role, test_target_and_variants]
 
 
