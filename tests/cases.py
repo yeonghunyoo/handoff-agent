@@ -722,6 +722,12 @@ def test_loop_and_handoff():
     check("loop: 재착수 역할의 리포트 파일만 지워진다", os.path.isfile(util.ho(root, util.REPORTS, "backend.json"))
           and not os.path.exists(util.ho(root, util.REPORTS, "ios.json")) and not os.path.exists(util.ho(root, util.REPORTS, "android.json")))
     check("loop: 재착수 프롬프트에 인계", "Carried from v1" in r["prompts"]["android"] and "Parity gaps" in r["prompts"]["android"], r["prompts"]["android"][-1500:])
+    # 재착수 선정은 인계의 역할별 키 전부를 본다 — untested 만 남은 역할도 다른 역할에 갭이 있을 때 빠지지 않는다
+    fake = {"roles": {"backend": {"untested": ["API-01"]}, "ios": {"hardcodes": ["a.swift:1 hex"]}, "android": {}}}
+    check("loop: untested 만 남은 역할도 재착수 대상", tools._redo_roles(fake, ["backend", "ios", "android"]) == ["backend", "ios"],
+          tools._redo_roles(fake, ["backend", "ios", "android"]))
+    check("loop: 인계의 역할별 키 = 재착수 키 (write_handoff 와 REDO_KEYS 가 어긋나지 않는다)",
+          set(tools.REDO_KEYS) == set(ho["roles"]["ios"]), (sorted(tools.REDO_KEYS), sorted(ho["roles"]["ios"])))
     # 재착수한 둘만 다시 report 하면 verify 가 전체(backend 포함)를 다시 잰다
     implement(root, roles=("ios", "android"))
     tools.report(root, "ios", report())

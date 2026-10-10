@@ -510,10 +510,14 @@ def _unconsumed(cfg, e):
     return checks.unconsumed(e["consumption"], e.get("approved") or [])
 
 
+# score.write_handoff 가 역할별 인계에 쓰는 목록 전부 — 하나라도 비어 있지 않으면 그 역할은 loop 에서 다시 띄운다.
+# untested(계약 상수를 안 건드리는 스위트)도 그 역할만의 결함이라 포함한다. write_handoff 에 키를 더하면 여기도 더한다.
+REDO_KEYS = ("not_done", "blocked", "unused", "hardcodes", "parity", "untested", "blockers")
+
+
 def _redo_roles(handoff, roles):
     """loop 때 다시 띄울 역할 — 인계에 뭐라도 적힌 역할. 전부 깨끗한데 loop 면(점수·미승인 발산만의 문제) 전부 다시."""
-    keys = ("not_done", "blocked", "unused", "hardcodes", "parity", "blockers")
-    redo = [r for r in roles if any((handoff["roles"].get(r) or {}).get(k) for k in keys)]
+    redo = [r for r in roles if any((handoff["roles"].get(r) or {}).get(k) for k in REDO_KEYS)]
     return redo or list(roles)
 
 
