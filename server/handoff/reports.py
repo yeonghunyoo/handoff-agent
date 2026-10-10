@@ -190,6 +190,9 @@ T2 [REPORT] Skipped/deleted tests and edited expectations are listed for the hum
 T3 [SCORE]  Tests must reference the generated constants; a suite that touches none is not evidence.
 R1 [BLOCK]  Run precheck(role) until it passes, then report(role, report). Reports with open
             blockers are refused unless status=blocked.
+R4 [REJECT] A report is refused while any contract item in your checklist is unconsumed
+            (precheck.missing lists them). Done means every item. Exceptions: the human approved
+            the topic in spec.divergences, or status=blocked [R2]. Parity is settled here, not later.
 R2 [REJECT] status=blocked needs blocked[] entries with `tried` (what you attempted) and `error` (verbatim).
 R3 [SELF]   Commit per unit of work with a clear subject. Test-first commits are noted in the verdict.
 """
@@ -360,7 +363,7 @@ def kickoff(root, cfg, role, st, t, handoff):
           "- Commit after every screen or component, and before any long build [R3]. Work that is not committed is lost if the session ends — "
           "an earlier loop lost a full hour of finished code this way. Never end a turn with uncommitted work you would not want to redo.",
           "", RULES, "## Finish",
-          f"1. precheck(role=\"{role}\") — fix every blocker, rerun until PASS [R1]",
+          f"1. precheck(role=\"{role}\") — fix every blocker and consume every item in `missing`, rerun until PASS and complete [R1 R4]",
           f"2. report(role=\"{role}\", report=...) with this shape:", REPORT_SHAPE,
           "The server fills version and hashes; do not send them. Wall-clock seconds are welcome.", ""]
     return "\n".join(L)

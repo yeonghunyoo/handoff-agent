@@ -247,3 +247,84 @@ def path_regex(template):
     """경로 템플릿을 코드 안 리터럴 대조용 정규식으로 — {id} 는 어떤 파라미터 표기든 받는다."""
     parts = re.split(r"\{[^}]+\}", template)
     return re.compile(r"[{:<$]?[\w.]+[}>]?".join(re.escape(p) for p in parts) + r"(?!\w)(?!/[^\"'\s)])")
+
+
+# ─────────────────────────── 골격 초안 ───────────────────────────
+
+def _words(name):
+    return [w for w in name.lower().split("_") if w]
+
+
+def _singular(word):
+    if word.endswith("ies") and len(word) > 3:
+        return word[:-3] + "y"
+    if word.endswith("ses") or word.endswith("xes"):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _camel_words(words, upper_first):
+    out = "".join(w[:1].upper() + w[1:] for w in words)
+    return out if upper_first else out[:1].lower() + out[1:]
+
+
+def _yaml_type(v):
+    if isinstance(v, bool):
+        return "boolean"
+    if isinstance(v, int):
+        return "integer"
+    if isinstance(v, float):
+        return "number"
+    if isinstance(v, list):
+        return "array"
+    if isinstance(v, dict):
+        return "object"
+    return "string"
+
+
+def _q(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def skeleton(entities):
+    """derived/entities.json 의 컬렉션(대문자 const 배열, 원소가 객체)마다 CRUD 라우트 다섯 개 + 스키마를 결정적으로 뽑은
+    openapi 문서(문자열). LLM 이 백지에서 쓰지 않고 이것을 다듬게 하는 출발점이다 — 화면이 안 쓰는 라우트는 지우고 없는 것은 더한다.
+    컬렉션이 없으면 None. 결과는 validate 를 통과한다."""
+    cols = {k: v for k, v in (entities or {}).items()
+            if not k.startswith("_") and isinstance(v, list) and v and all(isinstance(x, dict) for x in v)}
+    if not cols:
+        return None
+    L = ["openapi: 3.0.0", 'info: {title: "API (draft from design/derived/entities.json — edit, then api_submit)", version: "1"}', "paths:"]
+    S = ["components:", "  schemas:"]
+    for name in sorted(cols):
+        words = _words(name)
+        sing = words[:-1] + [_singular(words[-1])]
+        Sing, sings = _camel_words(sing, True), _camel_words(sing, False)
+        plural = _camel_words(words, True)
+        path = "/" + "-".join(words)
+        pid = sings + "Id"
+        L += [f"  {path}:",
+              "    get:", f"      operationId: list{plural}", f"      summary: List {' '.join(words)}",
+              "    post:", f"      operationId: create{Sing}", f"      summary: Create a {' '.join(sing)}",
+              f"  {path}/{{{pid}}}:",
+              "    get:", f"      operationId: get{Sing}", f"      summary: Get one {' '.join(sing)}",
+              "    put:", f"      operationId: update{Sing}", f"      summary: Update a {' '.join(sing)}",
+              "    delete:", f"      operationId: delete{Sing}", f"      summary: Delete a {' '.join(sing)}"]
+        first = cols[name][0]
+        S += [f"    {Sing}:", "      type: object", "      properties:"]
+        for k in first:
+            v = first[k]
+            S.append(f"        {k}:")
+            S.append(f"          type: {_yaml_type(v)}")
+            if isinstance(v, list):
+                S.append("          items:")
+                S.append(f"            type: {_yaml_type(v[0]) if v else 'string'}")
+            if isinstance(v, bool):
+                S.append(f"          example: {'true' if v else 'false'}")
+            elif isinstance(v, (int, float)):
+                S.append(f"          example: {v}")
+            elif isinstance(v, str):
+                S.append(f"          example: {_q(v)}")
+    return "\n".join(L + S) + "\n"

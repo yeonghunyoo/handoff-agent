@@ -1,6 +1,6 @@
 # 원칙 — 이 리포가 지키는 것
 
-Claude Design 핸드오프 패키지를 계약으로 받아 iOS · Android · web · backend 를 역할별 워크트리에서 만들고(기본 직렬), 서버가 실측한 것만
+Claude Design 핸드오프 패키지를 계약으로 받아 iOS · Android · web · backend 를 역할별 워크트리에서 만들고(기본 병렬), 서버가 실측한 것만
 사람 승인 뒤 본선에 올린다. 진입은 `/handoff`(MCP `advance`) 와 터미널 `run.py run` 둘이고, 둘 다 같은 그래프(`graph.py`)를 돈다.
 흐름의 정본은 그래프다 — LLM 과 사람은 그래프가 멈춘 지점(과제 · 승인)만 채운다.
 

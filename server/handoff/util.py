@@ -44,13 +44,16 @@ DEFAULTS = {
     },
     # require_runtime: true 면 런타임 증거(서버가 돌린 테스트 또는 빌드 성공 리포트)가 없는 역할이 있을 때 ship 을 거부한다.
     # 기본 false — 툴체인 없는 기기에서는 정적 검사만으로 pass_static 을 내고, 런타임 검증은 상태(runtime_pending)에 남긴다.
-    "verify": {"commands": {"backend": [], "ios": [], "android": [], "web": []}, "timeout_sec": 600, "require_runtime": False},
+    # require_complete: true(기본) 면 계약 항목(라우트·화면·아이콘·문구·핸들러)을 하나라도 안 소비한 리포트를 접수하지 않는다 —
+    # spec.divergences 로 승인된 항목과 status=blocked 만 예외. 파리티 갭은 접수 단계에서 구조적으로 막힌다 (끝나고 loop 가 아니라).
+    "verify": {"commands": {"backend": [], "ios": [], "android": [], "web": []}, "timeout_sec": 600, "require_runtime": False,
+               "require_complete": True},
     # builder.command: 그래프(graph.advance)가 역할을 착수할 때 서버가 직접 띄우는 셸 명령. 착수 프롬프트를 stdin 으로 받고
     # cwd 는 워크트리, 환경 변수 HANDOFF_ROOT · HANDOFF_ROLE · HANDOFF_WORKTREE. 비어 있으면 클라이언트(스킬)에 과제로 넘긴다.
     "builder": {"command": "", "timeout_sec": 7200},
-    # 착수 방식. serial 이 기본이다 — iOS·Android 툴체인을 한 기기에서 동시에 돌리면 코어를 나눠 써서
-    # 각 빌드가 느려지고, 한쪽이 막히면 세션 전체가 길어진다. 코어가 넉넉하면 "parallel" 로 바꾼다.
-    "dispatch": {"mode": "serial", "order": ["backend", "ios", "android", "web"]},
+    # 착수 방식. parallel 이 기본이다 — 빌더 한 턴의 대부분은 LLM 시간이고 컴파일은 끝에 잠깐이라, 역할을 동시에 띄우는 쪽이
+    # 벽시계 시간을 줄인다. 한 기기에서 iOS·Android 빌드가 코어를 심하게 나눠 쓰면 "serial" 로 바꾼다 (order 순서로 하나씩).
+    "dispatch": {"mode": "parallel", "order": ["backend", "ios", "android", "web"]},
     "test_globs": [
         "**/test_*.py", "**/*_test.py", "**/tests/**/*.py",
         "**/*.test.ts", "**/*.test.tsx", "**/*.test.js", "**/*.spec.ts", "**/*.spec.js",
@@ -113,7 +116,8 @@ EMPTY_STATE = {
     "phase": "import", "version": 0, "cycle": 1,
     "locked": None,          # {"version": n, "hash": 지문} — 승인 시점의 design/+api/ 지문
     "roles": [],             # 이번 루프에 착수한 역할
-    "reports": [],           # 리포트를 낸 역할
+    # "reports" 는 저장하지 않는다 — .handoff/reports/<role>.json 의 존재(+ _version 일치)에서 flow.current() 가 매번 derive 한다.
+    # 병렬 빌더가 report 를 동시에 내도 각자 자기 파일만 쓰므로 유실이 없고, 결산(verify)은 주행자 하나가 한다.
     "verdict": None,         # 마지막 verify 결과 (loop | pass_static | pass)
     "runtime_pending": [],   # 런타임 증거 없이 머지된 역할 — 툴체인 있는 기기에서 나중에 검증한다
     "design_source": None,   # {"path", "url", "project_id"} — 패키지 출처 (요약 표에 보인다)
@@ -130,6 +134,29 @@ def read_state(root):
 
 def write_state(root, st):
     write_json(ho(root, STATE), st)
+
+
+def reported_roles(root, version):
+    """이 계약 버전의 리포트 파일이 있는 역할 — 접수 목록의 유일한 출처. 다른 버전의 파일은 없는 것으로 친다."""
+    d = ho(root, REPORTS)
+    out = []
+    if os.path.isdir(d):
+        for n in sorted(os.listdir(d)):
+            if n.endswith(".json"):
+                rec = read_json(os.path.join(d, n))
+                if isinstance(rec, dict) and rec.get("_version") == version:
+                    out.append(n[:-5])
+    return out
+
+
+def clear_reports(root, roles=None):
+    """리포트 파일 삭제 — roles 가 없으면 전부. loop 재착수(그 역할만) · back(전부) 이 쓴다."""
+    d = ho(root, REPORTS)
+    if not os.path.isdir(d):
+        return
+    for n in os.listdir(d):
+        if n.endswith(".json") and (roles is None or n[:-5] in roles):
+            os.remove(os.path.join(d, n))
 
 
 def record(root, st, ev, **fields):

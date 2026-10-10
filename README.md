@@ -75,7 +75,7 @@ python3 <플러그인 루트>/server/run.py submit answer.json --root .   # 과�
 | ② 스펙 | 플랫폼 · 백엔드 스택 · 규모(예상 MAU·DAU → 소규모 / 중규모 이상) · 인프라(db/auth/hosting/env) **결정만 기록** | 규모를 먼저 정하면 그 규모에 맞는 인프라 조합 **4~5개**(그날 후보의 요금 페이지에서 새로 읽은 월 비용 구간 · 확인일 · 출처 · 장단점 · 종속성)를 보고 직접 고른다. 나머지 조합은 id 로 부를 수 있다 |
 | ③ 백엔드 계약 | 화면·문서에서 필요한 데이터로 `api/openapi.yaml` 초안 | — |
 | ④ 계약 확정 ✋ | 요약 표(디자인 출처 · 화면 · 계약 지문 · 선택한 인프라)를 채팅에 보인다 | 지문을 대조하고 승인/반려 |
-| ⑤ 구현 | 역할별 워크트리 + 생성 상수(`ApiRoutes` `Screens` `DesignTokens`) + 착수 프롬프트로 구현. `build` 응답의 `dispatch` 대로 — 기본 직렬(한 번에 한 역할), `config.json` 의 `dispatch.mode: "parallel"` 로 동시 착수 | 기다린다 |
+| ⑤ 구현 | 역할별 워크트리 + 생성 상수(`ApiRoutes` `Screens` `DesignTokens`) + 착수 프롬프트로 구현. `build` 응답의 `dispatch` 대로 — 기본 병렬(역할 전부 동시에), `config.json` 의 `dispatch.mode: "serial"` 로 한 번에 하나씩. 리포트는 계약 항목을 **전부** 소비해야 접수된다 (승인된 발산 · blocked 만 예외) — 파리티 갭은 접수 단계에서 막힌다. loop 가 나면 갭 있는 역할만 다시 뛴다 | 기다린다 |
 | ⑥ 검사 | 서버가 재검사해 점수 → `loop`(인계 후 재착수) 또는 `pass` / `pass_static`(정적 검사는 통과, 빌드·테스트 증거가 없는 역할이 있음 — Xcode·SDK 없는 기기) | 계약 수정 제안이 있으면 판단 |
 | ⑦ 완료 승인 ✋ | 예외 항목(테스트 skip·하드코딩·플랫폼 차이·런타임 미검증)과 함께 보인다 | 승인 → main 머지. `pass_static` 이었으면 그 역할이 `runtime_pending` 으로 남는다 — 툴체인 있는 기기에서 나중에 검증. 막으려면 config `verify.require_runtime: true` |
 

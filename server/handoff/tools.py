@@ -13,6 +13,7 @@ import sys
 
 from . import api, checks, derive, design, flow, gen, git, infra, leaks, reports, score, util
 
+
 DRAFT = "spec.draft.json"
 LAST = "last-verify.json"
 PASSING = ("pass", "pass_static")   # ship 으로 가는 판정 — pass_static 은 런타임 증거 없는 역할이 남은 통과
@@ -104,6 +105,10 @@ def status(root):
             n = len(st["infra_options"]["services"])
             st["warnings"].append(f"인프라 요금이 아직 조회되지 않았다 (내장 폴백 {infra.COST_BASIS} 기준) — "
                                   f"infra_options.services 의 요금 페이지 {n}개만 읽어 infra.pricing 으로 저장한 뒤 표를 보인다")
+    if st["phase"] == "api":
+        st["api_draft"] = api_draft(root)
+        if st["api_draft"]:
+            st["warnings"].append("api_draft 에 derived/entities.json 의 컬렉션으로 뽑은 CRUD 골격이 있다 — 백지가 아니라 이것을 다듬어 api_submit 한다")
     if flow.idx(st["phase"]) >= flow.idx("review"):
         st["summary"] = _summary(root, st)
     if flow.idx(st["phase"]) >= flow.idx("build"):
@@ -112,7 +117,7 @@ def status(root):
            "cycle": st["cycle"], "human": st["human"], "next": st["next"], "warnings": st["warnings"],
            "fingerprint": st["fingerprint"], "roles": st.get("roles"), "reports": st.get("reports"),
            "steps": steps, "hints": st.get("hints"), "infra_options": st.get("infra_options"),
-           "summary": st.get("summary"), "checklist": st.get("checklist"),
+           "summary": st.get("summary"), "checklist": st.get("checklist"), "api_draft": st.get("api_draft"),
            "message": f"{st['label']} · 계약 v{st['version']} · 지문 [{st['fingerprint']}]\n다음: {st['next']}"}
     if st["manifest"]:
         m = st["manifest"]
@@ -164,8 +169,9 @@ MCP 도구 `status` 를 부르고 `next` 를 따른다.** 절차는 `/handoff` �
 - 순서: 패키지 등록 → 스펙·인프라 결정 → openapi → 계약 확정(사람) → 구현 → 검사 → 완료 승인(사람)
 - `design/` · `api/` · `shared/generated/` 는 직접 편집하지 않는다. 계약 변경은 `back` 으로 되돌아가 재승인.
 - 구현은 `.handoff/worktrees/<역할>` 안에서만 한다. 승인은 사람만 한다 (elicitation).
-- 구현 착수는 `build` 응답의 `dispatch` 를 따른다 — 기본은 **직렬**(한 번에 한 역할, report 를 받고 다음).
-  `.handoff/config.json` 의 `dispatch.mode` 를 `"parallel"` 로 바꾸면 동시 착수한다.
+- 구현 착수는 `build` 응답의 `dispatch` 를 따른다 — 기본은 **병렬**(`dispatch.order` 의 역할을 한 번에 띄운다).
+  `.handoff/config.json` 의 `dispatch.mode` 를 `"serial"` 로 바꾸면 한 번에 한 역할씩 띄운다.
+- 리포트는 계약 항목을 전부 소비해야 접수된다 [R4] — 파리티 갭은 끝나고 고치는 게 아니라 접수 단계에서 막는다.
 """
 
 
@@ -206,7 +212,7 @@ def import_design(root, path=None, screens=None, components=None, url=None, targ
         st["cycle"] += 1
     spec_ok = not flow.spec_problems(util.read_spec(root))
     st["phase"] = "api" if spec_ok else "spec"
-    st["roles"], st["reports"] = [], []
+    st["roles"] = []
     if path or url:
         st["design_source"] = {"path": src if path else (st.get("design_source") or {}).get("path"),
                                "url": url or (st.get("design_source") or {}).get("url"),
@@ -300,6 +306,12 @@ def spec_save(root, spec):
 
 # ─────────────────────────── ③ API ───────────────────────────
 
+def api_draft(root):
+    """③ openapi 골격 — design/derived/entities.json 의 컬렉션(대문자 const 배열)마다 CRUD 라우트를 결정적으로 뽑는다.
+    LLM 은 백지가 아니라 이것을 출발점으로 다듬어 api_submit 한다. 컬렉션이 없으면 None."""
+    return api.skeleton(derive.read(root, "entities.json") or {})
+
+
 def api_submit(root, openapi):
     cfg, st = _st(root)
     why = flow.require(st, "api", "review")
@@ -372,7 +384,7 @@ def review(root, approver=None):
     st["version"] = version
     st["locked"] = {"version": version, "hash": st["fingerprint"]}
     st["phase"] = "build"
-    st["roles"], st["reports"], st["verdict"] = [], [], None
+    st["roles"], st["verdict"] = [], None
     reports.plan_doc(root, cfg, dict(st, version=version), _routes(root))
     if not git.has_commits(root):
         git.run(root, "commit", "--allow-empty", "-q", "-m", "handoff: init")
@@ -400,7 +412,8 @@ def back(root, to, reason):
         return _refuse(f"지금 단계({st['label']})보다 앞으로는 못 간다.")
     st["phase"] = to
     if flow.idx(to) <= flow.idx("build"):
-        st["roles"], st["reports"] = [], []
+        st["roles"] = []
+        util.clear_reports(root)                      # 접수 목록은 파일에서 derive 된다 — 되돌아가면 전부 미접수
     _save(root, st, "back", to=to, reason=reason)
     cfg, st = _st(root)
     note = ("" if to == "build" else
@@ -451,7 +464,8 @@ def build(root):
     if errs:
         return _refuse("워크트리 준비 실패 — 착수하지 않았다:\n" + "\n".join(f"  × {r}: {e}" for r, e in errs.items()))
     prompts = {r: reports.kickoff(root, cfg, r, st, t, handoff) for r in roles}
-    st["roles"], st["reports"] = roles, []
+    util.clear_reports(root)
+    st["roles"] = roles
     _save(root, st, "dispatched", roles=roles, version=st["version"])
     cfg, st = _st(root)
     _docs(root, cfg, st)
@@ -463,9 +477,9 @@ def build(root):
 
 
 def _dispatch_plan(cfg, roles):
-    """착수 순서와 방식. 기본은 직렬 — 한 기기에서 툴체인이 코어를 나눠 쓰면 모두가 느려진다."""
+    """착수 순서와 방식. 기본은 병렬 — 빌더 시간의 대부분은 LLM 이라 동시에 띄우는 쪽이 벽시계를 줄인다. 코어가 모자라면 serial."""
     d = cfg.get("dispatch") or {}
-    mode = d.get("mode", "serial")
+    mode = d.get("mode", "parallel")
     order = [r for r in (d.get("order") or util.ROLES) if r in roles]
     order += [r for r in roles if r not in order]         # 설정에 없는 역할은 뒤에
     return {"mode": mode, "order": order, "next": order[0] if order else None}
@@ -489,6 +503,24 @@ def _prepare_worktree(root, role, files, version):
     return {"path": wt, "branch": git.branch(role), "created": created}
 
 
+def _unconsumed(cfg, e):
+    """[R4] 소비 안 된 계약 항목 중 승인된 발산(spec.divergences)으로 덮이지 않은 것. require_complete 가 꺼져 있으면 빈 목록."""
+    if not cfg["verify"].get("require_complete", True):
+        return []
+    return checks.unconsumed(e["consumption"], e.get("approved") or [])
+
+
+# score.write_handoff 가 역할별 인계에 쓰는 목록 전부 — 하나라도 비어 있지 않으면 그 역할은 loop 에서 다시 띄운다.
+# untested(계약 상수를 안 건드리는 스위트)도 그 역할만의 결함이라 포함한다. write_handoff 에 키를 더하면 여기도 더한다.
+REDO_KEYS = ("not_done", "blocked", "unused", "hardcodes", "parity", "untested", "blockers")
+
+
+def _redo_roles(handoff, roles):
+    """loop 때 다시 띄울 역할 — 인계에 뭐라도 적힌 역할. 전부 깨끗한데 loop 면(점수·미승인 발산만의 문제) 전부 다시."""
+    redo = [r for r in roles if any((handoff["roles"].get(r) or {}).get(k) for k in REDO_KEYS)]
+    return redo or list(roles)
+
+
 def precheck(root, role):
     cfg, st = _st(root)
     if role not in util.ROLES:
@@ -497,18 +529,25 @@ def precheck(root, role):
     e = score.evaluate_role(root, cfg, role, t, st["version"], precheck=True)
     cons = e["consumption"]
     ok = not e["blockers"]
-    return {"ok": True, "passed": ok, "blockers": e["blockers"],
+    missing = _unconsumed(cfg, e)
+    return {"ok": True, "passed": ok, "complete": not missing, "missing": missing, "blockers": e["blockers"],
             "consumption": {"used": cons["used"], "total": cons["total"], "rate": cons["rate"],
                             "unused": [i["id"] + " " + (i["const"] or i["label"]) for i in cons["items"] if not i["used"]]},
             "hardcodes": e["hardcodes"][:30], "test_bypass": e["bypass"], "tokens": e.get("tokens") or [],
-            "message": (("PRECHECK PASS. Next: report(role, report) [R1]." if ok else
+            "message": (("PRECHECK PASS. Next: report(role, report) [R1]." if ok and not missing else
                          "PRECHECK FAIL. Fix every blocker, rerun precheck [R1]. A report with an open blocker is refused "
-                         "unless status=blocked.")
+                         "unless status=blocked." if not ok else
+                         f"PRECHECK INCOMPLETE. {len(missing)} contract item(s) not consumed — a report is refused until they are [R4] "
+                         "(or spec.divergences covers them, or status=blocked): " + ", ".join(missing[:12])
+                         + (f" … +{len(missing) - 12}" if len(missing) > 12 else "") + ".")
                         + f" consumption {cons['rate']}% · hardcodes {len(e['hardcodes'])} [C3] · "
                           f"skips {len(e['bypass']['skips'])} · deleted tests {len(e['bypass']['deleted_tests'])} [T2].")}
 
 
 def report(root, role, rep):
+    """리포트 접수 — 자기 파일(.handoff/reports/<role>.json)만 쓴다. state.json 을 건드리지 않고 verify 도 돌리지 않는다:
+    접수 목록과 build → verify 전이는 flow.current() 가 파일에서 derive 하고, 결산은 주행자가 한 번 한다.
+    그래서 병렬 빌더가 동시에 내도 유실·중복이 없고 잠금이 필요 없다."""
     cfg, st = _st(root)
     why = flow.require(st, "build")
     if why:
@@ -526,20 +565,19 @@ def report(root, role, rep):
         if e["blockers"]:
             return _refuse("REJECTED [R1]: open blockers. Not recorded. Fix and resubmit, or submit status=blocked "
                            "with tried + error [R2].\n" + "\n".join(f"  x {b}" for b in e["blockers"]))
+        missing = _unconsumed(cfg, e)
+        if missing:
+            return _refuse(f"REJECTED [R4]: {len(missing)} contract item(s) not consumed. Not recorded. Consume them and resubmit; "
+                           "an unavoidable difference needs the human to approve it as spec.divergences, or submit status=blocked "
+                           "with tried + error [R2].\n" + "\n".join(f"  x {m}" for m in missing[:40])
+                           + (f"\n  … +{len(missing) - 40} more" if len(missing) > 40 else ""))
     rec = leaks.mask_all_deep({**rep, "_role": role, "_version": st["version"], "_at": util.now()})
     util.write_json(util.ho(root, util.REPORTS, f"{role}.json"), rec)
-    if role not in st["reports"]:
-        st["reports"].append(role)
-    remaining = [r for r in st["roles"] if r not in st["reports"]]
-    if not remaining:
-        st["phase"] = "verify"
-    _save(root, st, "reported", role=role, status=rep.get("status"))
-    out = {"ok": True, "accepted": True, "message": "ACCEPTED. " + (f"Waiting on: {', '.join(remaining)}." if remaining else "All reports in.")}
-    if not remaining:
-        auto = verify(root)
-        out["verify"] = auto
-        out["message"] += " Verify ran automatically.\n" + auto.get("message", "")
-    return out
+    reported = util.reported_roles(root, st["version"])
+    remaining = [r for r in st["roles"] if r not in reported]
+    return {"ok": True, "accepted": True, "remaining": remaining,
+            "message": "ACCEPTED. " + (f"Waiting on: {', '.join(remaining)}." if remaining else
+                                       "All reports in — the orchestrator runs verify once (advance/submit, or the verify tool).")}
 
 
 # ─────────────────────────── ⑥ 검사 ───────────────────────────
@@ -561,9 +599,9 @@ def verify(root):
     if result["verdict"] in PASSING:
         st["phase"] = "ship"
     else:
-        score.write_handoff(root, result, st["version"])
-        st["phase"] = "build"
-        st["roles"], st["reports"] = [], []
+        h = score.write_handoff(root, result, st["version"])
+        st["phase"], st["roles"] = "build", roles
+        util.clear_reports(root, _redo_roles(h, roles))              # 갭 있는 역할만 미접수로 — 깨끗한 역할의 리포트는 남는다
     st["verdict"] = result["verdict"]
     _save(root, st, "verified", score=result["score"], verdict=result["verdict"], blockers=len(result["blockers"]))
     cfg, st = _st(root)
@@ -601,8 +639,9 @@ def ship(root, approver=None):
     result = score.evaluate(root, cfg, roles, st["version"])         # 저장값을 믿지 않는다 — 다시 잰다
     util.write_json(util.ho(root, LAST), result)
     if result["verdict"] not in PASSING:
-        score.write_handoff(root, result, st["version"])
-        st["phase"], st["roles"], st["reports"] = "build", [], []
+        h = score.write_handoff(root, result, st["version"])
+        st["phase"], st["roles"] = "build", roles
+        util.clear_reports(root, _redo_roles(h, roles))
         _save(root, st, "verified", score=result["score"], verdict="loop", blockers=len(result["blockers"]))
         return _refuse(f"재검사 결과 pass 가 아니다 (점수 {result['score']}) — build 로 돌아간다.\n"
                        + "\n".join(f"  × {b}" for b in result["blockers"]))

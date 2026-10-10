@@ -144,7 +144,7 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
                 "runtime_source": "server" if server_ran else "self-reported" if build_ok is True else "none",
                 "build_ok": build_ok}
 
-    return {"role": role, "role_path": role_path, "blockers": blockers,
+    return {"role": role, "approved": approved, "role_path": role_path, "blockers": blockers,
             "consumption": cons, "hardcodes": hard, "tokens": tokens, "bypass": bypass,
             "test_provenance": prov, "test_coverage": cov,
             "tests": {"score": tests_score, "source": src, "detail": verify}, "evidence": evidence,

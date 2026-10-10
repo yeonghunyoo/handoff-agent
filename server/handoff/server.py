@@ -175,7 +175,7 @@ def precheck(role: str) -> dict:
 @mcp.tool()
 def report(role: str, report: dict) -> dict:
     """⑤ 말 리포트 접수. {status: done|partial|blocked, not_done[], blocked[{what,tried[],error}], divergences[{topic,reason}],
-    proposals[], build{ok,seconds}, tests{passed,failed,seconds}, human_check[]}. 마지막 접수가 ⑥ verify 를 자동 실행한다."""
+    proposals[], build{ok,seconds}, tests{passed,failed,seconds}, human_check[]}. 자기 파일만 쓴다 — 전부 접수되면 phase 가 verify 로 보이고, 결산은 advance/submit 또는 verify 가 한 번 한다."""
     return _out(tools.report(ROOT, role, report))
 
 
