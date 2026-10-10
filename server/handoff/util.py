@@ -46,8 +46,11 @@ DEFAULTS = {
     # 기본 false — 툴체인 없는 기기에서는 정적 검사만으로 pass_static 을 내고, 런타임 검증은 상태(runtime_pending)에 남긴다.
     # require_complete: true(기본) 면 계약 항목(라우트·화면·아이콘·문구·핸들러)을 하나라도 안 소비한 리포트를 접수하지 않는다 —
     # spec.divergences 로 승인된 항목과 status=blocked 만 예외. 파리티 갭은 접수 단계에서 구조적으로 막힌다 (끝나고 loop 가 아니라).
+    # schema_dump.backend: 구현의 OpenAPI 를 JSON 으로 stdout 에 내는 명령 (cwd 는 워크트리의 역할 경로). 서버가 .handoff/evidence/
+    # backend.openapi.json 에 저장하고 계약 api/openapi.yaml 과 (메서드·경로·operationId) 집합을 대조한다 — 빠짐은 R4, 계약 밖 라우트는 사람 확인.
+    # spec_save 가 stack.backend(flow.BACKEND_STACKS) 에 맞춰 기본값을 채운다. 비어 있고 파일도 없으면 정적 추정(경로 리터럴)으로 내려간다.
     "verify": {"commands": {"backend": [], "ios": [], "android": [], "web": []}, "timeout_sec": 600, "require_runtime": False,
-               "require_complete": True},
+               "require_complete": True, "schema_dump": {"backend": ""}},
     # builder.command: 그래프(graph.advance)가 역할을 착수할 때 서버가 직접 띄우는 셸 명령. 착수 프롬프트를 stdin 으로 받고
     # cwd 는 워크트리, 환경 변수 HANDOFF_ROOT · HANDOFF_ROLE · HANDOFF_WORKTREE. 비어 있으면 클라이언트(스킬)에 과제로 넘긴다.
     "builder": {"command": "", "timeout_sec": 7200},

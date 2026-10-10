@@ -227,7 +227,7 @@ def routes(doc):
             if name in seen:
                 raise ApiError(f"라우트 이름이 겹친다: {name} ({m.upper()} {path})")
             seen.add(name)
-            out.append({"name": name, "method": m.upper(), "path": path,
+            out.append({"name": name, "method": m.upper(), "path": path, "explicit_id": bool(op.get("operationId")),
                         "summary": str(op.get("summary") or op.get("description") or "")[:120]})
     if not out:
         raise ApiError("메서드가 하나도 없다 (get/post/… 가 필요하다)")

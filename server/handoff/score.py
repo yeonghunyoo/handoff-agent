@@ -77,6 +77,20 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
     vio = checks.violations(root, cfg, role, files)
     drift = checks.skeleton_drift(root, cfg, role, version)
     cons = checks.consumption(tree, role_path, cfg, role, t)
+    api_drift = None
+    if role == "backend":
+        # 구현의 OpenAPI 가 있으면 라우트 소비를 정규식 추정이 아니라 생성 스키마 ↔ 계약 diff 로 판정한다 (빠짐·이름 다름 → 미소비).
+        doc, src, reason = checks.api_dump(root, cfg, role_path)
+        if doc is not None:
+            api_drift = {**checks.api_drift(doc, t["routes"]), "source": src}
+            bad = {k.split(" operationId ", 1)[0] for k in api_drift["renamed"]} | set(api_drift["missing"])
+            for i in cons["items"]:
+                if i["kind"] == "route":
+                    i["used"] = i["label"] not in bad
+            n = sum(1 for i in cons["items"] if i["used"])
+            cons.update(used=n, rate=round(100.0 * n / cons["total"], 1) if cons["total"] else 100.0)
+        else:
+            api_drift = {"source": "none", "reason": reason}
     hard = checks.hardcodes(tree, role_path, cfg, role, t)
     tokens = checks.token_usage(tree, role_path, cfg, t, role=role) if role != "backend" else []
     bypass = checks.test_bypass(root, cfg, role)
@@ -145,7 +159,7 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
                 "build_ok": build_ok}
 
     return {"role": role, "approved": approved, "role_path": role_path, "blockers": blockers,
-            "consumption": cons, "hardcodes": hard, "tokens": tokens, "bypass": bypass,
+            "consumption": cons, "api_drift": api_drift, "hardcodes": hard, "tokens": tokens, "bypass": bypass,
             "test_provenance": prov, "test_coverage": cov,
             "tests": {"score": tests_score, "source": src, "detail": verify}, "evidence": evidence,
             "unapproved_divergences": unapproved, "report": report, "changed": files}
@@ -232,6 +246,8 @@ def exceptions(result):
                          + (f" (use {h['token']})" if h.get("token") else ""))
         for d in e["unapproved_divergences"]:
             items.append(f"[{r}] unapproved divergence: {(d.get('topic') if isinstance(d, dict) else d)}")
+        for x in ((e.get("api_drift") or {}).get("extra") or []):
+            items.append(f"[{r}] route not in the contract: {x} — approve (add to api/openapi.yaml via back) or have it removed")
         for x in ((e.get("report") or {}).get("human_check") or [])[:10]:
             items.append(f"[{r}] human check: {str(x)[:160]}")
         if not e.get("evidence", {}).get("runtime", True):

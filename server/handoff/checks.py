@@ -9,6 +9,7 @@
   leaks        코드 · 민감 파일 · 커밋 이력의 시크릿
 """
 import fnmatch
+import json
 import os
 import re
 import subprocess
@@ -426,9 +427,8 @@ def run_verify(root, cfg, role):
     cmds = (cfg.get("verify", {}).get("commands") or {}).get(role) or []
     if not cmds:
         return None
-    tracked = git.run(root, "ls-files", "--", f"{util.HO_DIR}/{util.CONFIG}", check=False).stdout.strip()
-    if tracked:
-        return {"ran": 0, "passed": 0, "seconds": 0, "refused": "config.json 이 git 에 추적돼 있어 실행하지 않았다"}
+    if config_tracked(root):
+        return {"ran": 0, "passed": 0, "seconds": 0, "refused": CONFIG_TRACKED}
     wt = util.worktree(root, role)
     cwd = os.path.join(wt, cfg["roles"].get(role, role))
     if not os.path.isdir(cwd):
@@ -447,6 +447,79 @@ def run_verify(root, cfg, role):
         passed += ok
         results.append({"cmd": c, "ok": ok, "tail": tail})
     return {"ran": len(cmds), "passed": passed, "seconds": round(time.time() - t0, 1), "results": results}
+
+
+CONFIG_TRACKED = "config.json 이 git 에 추적돼 있어 실행하지 않았다"
+
+
+def config_tracked(root):
+    """신뢰 경계 — .handoff/config.json 이 git 에 추적돼 있으면 거기 적힌 명령을 남의 기기에서 돌리지 않는다."""
+    return bool(git.run(root, "ls-files", "--", f"{util.HO_DIR}/{util.CONFIG}", check=False).stdout.strip())
+
+
+# ─────────────────────────── 백엔드 생성 스키마 ↔ 계약 ───────────────────────────
+
+API_DUMP = "backend.openapi.json"      # .handoff/evidence/ — 구현에서 생성한 OpenAPI (덤프 명령의 stdout 을 서버가 저장)
+
+
+def route_key(method, path):
+    """(METHOD, 경로) — 파라미터 이름은 무시한다 ({orderId} 와 {id} 는 같은 라우트)."""
+    return str(method).upper(), re.sub(r"\{[^}]*\}", "{}", str(path).rstrip("/") or "/")
+
+
+def api_dump(root, cfg, role_path):
+    """verify.schema_dump.backend 를 워크트리의 역할 경로에서 돌려 .handoff/evidence/backend.openapi.json 에 저장한다.
+    명령이 없으면 파일이 이미 있는지만 본다 (빌더가 직접 둔 것). 반환 (doc | None, source, reason)."""
+    dest = util.ho(root, "evidence", API_DUMP)
+    cmd = ((cfg.get("verify") or {}).get("schema_dump") or {}).get("backend") or ""
+    if cmd:
+        if config_tracked(root):
+            return None, "none", CONFIG_TRACKED
+        wt = util.worktree(root, "backend")
+        cwd = os.path.join(wt, role_path) if os.path.isdir(os.path.join(wt, role_path)) else (wt if os.path.isdir(wt) else None)
+        if cwd is None:
+            return None, "none", "워크트리가 없다"
+        try:
+            r = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True,
+                               timeout=(cfg.get("verify") or {}).get("timeout_sec", 600))
+        except subprocess.TimeoutExpired:
+            return None, "none", f"덤프 명령 timeout: {cmd}"
+        except OSError as e:
+            return None, "none", f"덤프 명령 실행 실패: {e}"
+        if r.returncode != 0:
+            return None, "none", f"덤프 명령 실패 ({r.returncode}): " + leaks.mask((r.stderr or r.stdout)[-300:]).strip()
+        try:
+            doc = json.loads(r.stdout)
+        except ValueError as e:
+            return None, "none", f"덤프 출력이 JSON 이 아니다: {e}"
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        util.write_json(dest, doc)
+        return doc, "dump", ""
+    if os.path.isfile(dest):
+        doc = util.read_json(dest)
+        if isinstance(doc, dict):
+            return doc, "file", ""
+        return None, "none", f"{API_DUMP} 를 읽지 못했다"
+    return None, "none", "덤프 명령도 파일도 없다 (verify.schema_dump.backend)"
+
+
+def api_drift(doc, routes):
+    """구현의 OpenAPI 와 계약 라우트의 집합 diff. {matched, missing[], extra[], renamed[]} — 문자열은 'METHOD /path' 형식.
+    operationId 는 계약이 명시한 라우트에서만 대조한다 (계약이 이름을 안 정했으면 생성 쪽 자동 이름은 어긋남이 아니다)."""
+    gen = {}                                                  # key → (operationId, 생성 쪽 원래 경로)
+    for path, ops in ((doc or {}).get("paths") or {}).items():
+        if not isinstance(ops, dict):
+            continue
+        for m, op in ops.items():
+            if str(m).lower() in api.METHODS:
+                gen[route_key(m, path)] = ((op or {}).get("operationId") if isinstance(op, dict) else None, path)
+    contract = {route_key(r["method"], r["path"]): r for r in routes}
+    missing = [f"{k[0]} {contract[k]['path']}" for k in contract if k not in gen]
+    extra = sorted(f"{k[0]} {gen[k][1]}" for k in gen if k not in contract)
+    renamed = [f"{k[0]} {contract[k]['path']} operationId {gen[k][0] or '(none)'} ≠ {contract[k]['name']}"
+               for k in contract if k in gen and contract[k].get("explicit_id") and gen[k][0] != contract[k]["name"]]
+    return {"matched": sum(1 for k in contract if k in gen), "total": len(contract),
+            "missing": missing, "extra": extra, "renamed": renamed}
 
 
 # ─────────────────────────── 시크릿 ───────────────────────────

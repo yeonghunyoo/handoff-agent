@@ -889,6 +889,84 @@ def test_complete_and_draft():
     check("draft: 그대로 내도 접수된다", r["ok"], r.get("message"))
 
 
+def test_api_drift():
+    """백엔드 생성 스키마 ↔ 계약 — 덤프가 있으면 라우트 소비를 정규식 추정이 아니라 집합 diff 로 판정한다 (빠짐·이름 다름 → R4 미소비),
+    계약 밖 라우트는 사람 확인으로 올린다. 덤프가 없으면 "못 잼" 으로 보이고 정적 추정으로 내려간다. 서버는 프레임워크를 모른다 — 스택별 차이는 표 데이터."""
+    root = make_repo()
+    tools.import_design(root, make_package(os.path.join(os.path.dirname(root), "pkg")))
+    # 사람이 적어 둔 덤프 명령은 spec_save 가 덮지 않는다
+    util.write_json(util.ho(root, util.CONFIG), {"verify": {"schema_dump": {"backend": "python3 mine.py"}}})
+    assert tools.spec_save(root, SPEC)["ok"]                                      # stack.backend = fastapi
+    check("stack: 사람이 적어 둔 schema_dump 는 보존", util.read_json(util.ho(root, util.CONFIG))["verify"]["schema_dump"]["backend"] == "python3 mine.py")
+    util.write_json(util.ho(root, util.CONFIG), {})
+    assert tools.spec_save(root, SPEC)["ok"]
+    raw = util.read_json(util.ho(root, util.CONFIG))
+    check("stack: spec_save 가 스택의 덤프 명령을 config 에 채운다 (fastapi → python3 openapi_dump.py)",
+          raw == {"verify": {"schema_dump": {"backend": "python3 openapi_dump.py"}}}, raw)
+    check("stack: 표에 없는 스택은 static 으로 (거부하지 않는다)", flow.backend_stack({"stack": {"backend": "django"}})["mode"] == "static"
+          and flow.backend_stack(SPEC)["mode"] == "generated" and flow.backend_stack({"stack": {"backend": "connexion"}})["mode"] == "spec-first")
+    check("stack: spec 단계 next 가 선택지를 보인다", "connexion" in flow.next_action({"phase": "spec"}) and "fastapi" in flow.next_action({"phase": "spec"}))
+    assert tools.api_submit(root, OPENAPI)["ok"]
+    assert tools.review(root, approver=APPROVE)["approved"]
+    summ = tools.status(root)["summary"]["markdown"]
+    check("stack: 요약 표의 백엔드 스택 행에 대조 모드", "계약 대조: 생성 스키마" in summ, summ[-600:])
+    b = tools.build(root)
+    check("stack: 백엔드 착수 프롬프트에 스택 힌트 · C4 · 덤프 명령", "operation_id=" in b["prompts"]["backend"] and "[C4]" in b["prompts"]["backend"]
+          and "python3 openapi_dump.py" in b["prompts"]["backend"] and "C4 [SCORE]" in b["prompts"]["backend"], b["prompts"]["backend"][-1200:])
+    implement(root)
+    dump = os.path.join(wt(root, "backend"), "backend", "openapi_dump.py")
+    def set_dump(doc):
+        w(dump, "import json\nprint(json.dumps(" + repr(doc) + "))\n")
+    # 가짜 생성 스키마: GET /orders 있음(계약이 이름을 안 정했으니 operationId 는 대조 안 함) · POST /orders 는 operationId 다름 ·
+    # GET /orders/{orderId} 빠짐 · DELETE /orders/{id} 는 계약 밖
+    set_dump({"openapi": "3.0.0", "paths": {"/orders": {"get": {"operationId": "auto_list_orders_get"}, "post": {"operationId": "makeOrder"}},
+                                            "/orders/{id}": {"delete": {"operationId": "deleteOrder"}}}})
+    pre = tools.precheck(root, "backend")
+    ad = pre["api_drift"]
+    check("drift: 덤프 대조 — 일치 2/3 · 빠짐 GET /orders/{orderId} · 계약 밖 DELETE · operationId 다름 1 (createOrder)",
+          ad["source"] == "dump" and ad["matched"] == 2 and ad["total"] == 3 and ad["missing"] == ["GET /orders/{orderId}"]
+          and ad["extra"] == ["DELETE /orders/{id}"] and len(ad["renamed"]) == 1 and "makeOrder ≠ createOrder" in ad["renamed"][0], ad)
+    check("drift: 빠짐·이름 다름은 R4 missing 으로, 일치는 소비로 (경로 리터럴이 있어도 덤프가 이긴다)",
+          not pre["complete"] and any("API-02" in m for m in pre["missing"]) and any("API-03" in m for m in pre["missing"])
+          and not any("API-01" in m for m in pre["missing"]) and pre["consumption"]["used"] == 1, (pre["missing"], pre["consumption"]))
+    check("drift: 증거 파일 .handoff/evidence/backend.openapi.json", os.path.isfile(util.ho(root, "evidence", checks.API_DUMP)))
+    check("drift: report 는 R4 로 거부", not tools.report(root, "backend", report())["ok"])
+    # 덤프 실패 → 못 잼 + 정적 추정으로 (app.py 에 경로 리터럴이 전부 있으니 complete)
+    w(dump, "import sys\nsys.exit(3)\n")
+    pre = tools.precheck(root, "backend")
+    check("drift: 덤프 명령 실패 → source none · 사유 · 정적 추정으로 complete", pre["api_drift"]["source"] == "none"
+          and "덤프 명령 실패" in pre["api_drift"]["reason"] and pre["complete"], pre["api_drift"])
+    # 명령도 파일도 없음
+    util.write_json(util.ho(root, util.CONFIG), {"verify": {"schema_dump": {"backend": ""}}})
+    os.remove(util.ho(root, "evidence", checks.API_DUMP))
+    pre = tools.precheck(root, "backend")
+    check("drift: 명령·파일 둘 다 없음 → 사유에 schema_dump", pre["api_drift"]["source"] == "none" and "schema_dump" in pre["api_drift"]["reason"], pre["api_drift"])
+    # 빌더가 파일을 직접 둔 경우 → source file
+    util.write_json(util.ho(root, "evidence", checks.API_DUMP), {"paths": {"/orders": {"get": {}, "post": {"operationId": "createOrder"}}, "/orders/{x}": {"get": {}}}})
+    pre = tools.precheck(root, "backend")
+    check("drift: 파일만 있어도 대조 (source file) · 파라미터 이름 무시 · complete", pre["api_drift"]["source"] == "file" and pre["api_drift"]["matched"] == 3
+          and pre["complete"] and pre["api_drift"]["extra"] == [], pre["api_drift"])
+    # 추적된 config 는 명령을 돌리지 않는다 (신뢰 경계 — run_verify 와 같다)
+    util.write_json(util.ho(root, util.CONFIG), {"verify": {"schema_dump": {"backend": "python3 openapi_dump.py"}}})
+    git.run(root, "add", "-f", ".handoff/config.json")
+    pre = tools.precheck(root, "backend")
+    check("drift: config.json 이 git 에 추적되면 덤프를 돌리지 않는다", pre["api_drift"]["source"] == "none" and pre["api_drift"]["reason"] == checks.CONFIG_TRACKED, pre["api_drift"])
+    git.run(root, "rm", "--cached", "-q", ".handoff/config.json")
+    # 고친 덤프 (계약 밖 DELETE 는 남김) → complete · 접수 → verify 가 계약 밖 라우트를 사람에게
+    set_dump({"openapi": "3.0.0", "paths": {"/orders": {"get": {}, "post": {"operationId": "createOrder"}},
+                                            "/orders/{id}": {"get": {}, "delete": {"operationId": "deleteOrder"}}}})
+    pre = tools.precheck(root, "backend")
+    check("drift: 고치면 complete · 계약 밖은 남아 있다", pre["complete"] and pre["api_drift"]["extra"] == ["DELETE /orders/{id}"], pre["api_drift"])
+    for r in ("backend", "ios", "android"):
+        assert tools.report(root, r, report())["ok"], r
+    v = tools.verify(root)
+    check("drift: verify 응답 api_drift · 체크리스트에 계약 대조 줄과 계약 밖 라우트 · 분석 문단", v["api_drift"]["extra"] == ["DELETE /orders/{id}"]
+          and "계약 대조: 구현의 OpenAPI" in v["checklist"]["markdown"] and "계약 밖 라우트 `DELETE /orders/{id}`" in v["checklist"]["markdown"]
+          and "계약 밖 라우트 1건" in v["checklist"]["markdown"], v["checklist"]["markdown"][-900:])
+    check("drift: ship 예외 항목에 계약 밖 라우트", any("route not in the contract: DELETE /orders/{id}" in x for x in score.exceptions(util.read_json(util.ho(root, "last-verify.json")))))
+    check("drift: 계약 밖 라우트는 블로커가 아니다 (사람이 정한다)", v["verdict"] in tools.PASSING and not any("DELETE" in b_ for b_ in v["blockers"]), (v["verdict"], v["blockers"]))
+
+
 def test_violations_and_secrets():
     root = to_locked(make_repo())
     tools.build(root)
@@ -1284,7 +1362,7 @@ def test_target_and_variants():
 
 
 TESTS = [test_candidates, test_yaml_and_routes, test_design_scan, test_bundle_and_states, test_derive, test_flow_gates, test_infra, test_generation, test_happy_cycle, test_evidence, test_parity_snapshot,
-         test_complete_and_draft, test_loop_and_handoff, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
+         test_complete_and_draft, test_loop_and_handoff, test_api_drift, test_violations_and_secrets, test_tests_evidence, test_report_and_state,
          test_screens_page, test_hooks, test_security, test_web_role, test_target_and_variants]
 
 

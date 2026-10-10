@@ -24,6 +24,47 @@ LABELS = {
 HUMAN = {"review", "ship"}
 WEB_PROJECTS = ("next-app", "vite-react", "existing")   # stack.web_project — v1 은 이 셋 (Svelte/Vue 는 검사 확장자·플레이북이 더 필요)
 
+# stack.backend 선택지 — 서버는 프레임워크를 모른다. 차이는 이 표의 데이터(모드 · 덤프 명령 · 빌더 힌트)뿐이고 분기는 없다.
+#   mode  spec-first  계약 api/openapi.yaml 을 읽어 라우팅한다 — 핸들러 없는 operationId 면 서버가 뜨지 않아 이탈이 구조적으로 불가 (기본 추천)
+#         generated   코드에서 OpenAPI 를 생성한다 — 덤프를 계약과 집합 diff 로 대조 (빠짐·추가·이름 다름 확정)
+#         static      둘 다 아니다 — 경로 리터럴 정규식 추정만 (existing 과 표에 없는 값)
+#   dump  구현의 OpenAPI 를 JSON 으로 stdout 에 내는 명령. 빌더가 역할 경로에 그 스크립트를 둔다 (hint 가 내용을 말한다).
+BACKEND_STACKS = {
+    "connexion": {"lang": "python", "mode": "spec-first", "dump": "python3 openapi_dump.py",
+                  "hint": "connexion: app.add_api(<path to api/openapi.yaml>) binds every operationId to a handler by name — the server "
+                          "refuses to start while one is missing, so booting is the completeness check. openapi_dump.py prints the loaded "
+                          "document as JSON (the API object add_api returns exposes it)."},
+    "fastapi": {"lang": "python", "mode": "generated", "dump": "python3 openapi_dump.py",
+                "hint": "FastAPI: declare every route with operation_id=<contract operationId> (e.g. @app.get(\"/orders\", operation_id=\"listOrders\")). "
+                        "openapi_dump.py: `from main import app; import json; print(json.dumps(app.openapi()))`."},
+    "openapi-backend": {"lang": "node", "mode": "spec-first", "dump": "node openapi-dump.mjs",
+                        "hint": "openapi-backend: new OpenAPIBackend({definition: <api/openapi.yaml>}) and register(<operationId>, handler) for every "
+                                "operation; api.init() validates the definition. openapi-dump.mjs prints JSON.stringify(api.definition)."},
+    "fastify-openapi-glue": {"lang": "node", "mode": "spec-first", "dump": "node openapi-dump.mjs",
+                             "hint": "fastify-openapi-glue: register with {specification: <api/openapi.yaml>, serviceHandlers} — one method per operationId. "
+                                     "openapi-dump.mjs prints the specification you load, as JSON."},
+    "fastify": {"lang": "node", "mode": "generated", "dump": "node openapi-dump.mjs",
+                "hint": "Fastify + @fastify/swagger: give every route schema an operationId equal to the contract's. openapi-dump.mjs: build the app, "
+                        "`await app.ready(); console.log(JSON.stringify(app.swagger()))`."},
+    "hono": {"lang": "node", "mode": "generated", "dump": "node openapi-dump.mjs",
+             "hint": "Hono + @hono/zod-openapi: createRoute({operationId: <contract operationId>, ...}) for every route. openapi-dump.mjs: "
+                     "`console.log(JSON.stringify(app.getOpenAPIDocument({openapi: '3.0.0', info: {title: 'api', version: '1'}})))`."},
+    "nestjs": {"lang": "node", "mode": "generated", "dump": "node openapi-dump.mjs",
+               "hint": "NestJS + @nestjs/swagger: @ApiOperation({operationId: <contract operationId>}) on every handler. openapi-dump.mjs: "
+                       "NestFactory.create(AppModule) then JSON.stringify(SwaggerModule.createDocument(app, new DocumentBuilder().build()))."},
+    "existing": {"lang": None, "mode": "static", "dump": "",
+                 "hint": "Existing backend: the server can only match route literals statically. If the framework can emit its OpenAPI, still write "
+                         "openapi_dump.py / openapi-dump.mjs that prints it as JSON and set verify.schema_dump.backend in .handoff/config.json."},
+}
+STACK_MODE_KO = {"spec-first": "스펙 우선 (계약이 라우팅 — 이탈 불가)", "generated": "생성 스키마 ↔ 계약 diff", "static": "정적 추정만"}
+
+
+def backend_stack(spec):
+    """spec.stack.backend → 표 항목. 표에 없는 값은 static 으로 본다 (거부하지 않는다 — 기존 스펙과 호환)."""
+    stack = spec.get("stack") if isinstance(spec, dict) and isinstance(spec.get("stack"), dict) else {}
+    name = str(stack.get("backend") or "").strip().lower()
+    return BACKEND_STACKS.get(name) or {"lang": None, "mode": "static", "dump": "", "hint": BACKEND_STACKS["existing"]["hint"]}
+
 
 def idx(p):
     return PHASES.index(p)
@@ -34,7 +75,10 @@ def next_action(st):
     if p == "import":
         return "import_design(path) — Claude Design 에서 내보낸 zip/폴더 경로를 넘긴다 (레포 루트에 두면 status.candidates 가 찾는다)"
     if p == "spec":
-        return "spec_save(spec) — platforms(ios/android/web) · stack.backend · infra(db/auth/hosting/env) 를 사람에게 묻고 저장한다"
+        return ("spec_save(spec) — platforms(ios/android/web) · stack.backend · infra(db/auth/hosting/env) 를 사람에게 묻고 저장한다. "
+                "stack.backend 는 선택지로 보인다: 스펙 우선 " + " | ".join(k for k, v in BACKEND_STACKS.items() if v["mode"] == "spec-first")
+                + " (추천 — 계약이 라우팅이라 이탈 불가) · 생성형 " + " | ".join(k for k, v in BACKEND_STACKS.items() if v["mode"] == "generated")
+                + " (생성 스키마를 계약과 대조) · existing (정적 검사만)")
     if p == "api":
         return "api_submit(openapi) — design/ 의 화면·문서를 읽고 각 화면이 필요로 하는 데이터로 openapi.yaml 을 초안한다"
     if p == "review":
