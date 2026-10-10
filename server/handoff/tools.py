@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 from . import api, checks, derive, design, flow, gen, git, infra, leaks, reports, score, util
 
@@ -199,7 +200,9 @@ def import_design(root, path=None, screens=None, components=None, url=None, targ
                 screens = design.scan(root, target=target)["screens"]     # target 만 덮을 때 — 그 대상으로 읽은 화면 목록을 확정한다
             design.confirm_screens(root, screens, components, target)
         m = design.scan(root)
+        derive_started = time.perf_counter()
         dv = derive.write_all(root, m)          # 파생물(문구·아이콘·모델·전이·컴포넌트·내비·의도·규칙) — 지문에 든다
+        dv["elapsed_seconds"] = round(time.perf_counter() - derive_started, 3)
         detail = dv.pop("_detail", None) or {}
         if m.get("confirmed"):
             design.write_manifest(root, m, detail)   # 확정 매니페스트에 상세를 채운다
@@ -239,6 +242,10 @@ def import_design(root, path=None, screens=None, components=None, url=None, targ
                  + " 는 화면이 아니라 **컴포넌트**로 잡았다 — 사용자에게 보이고, 이름·타입을 고치거나 화면으로 승격하려면 "
                    "import_design(components=[{id,type,title,anchor}...]) 또는 screens=… 로 다시 부른다. 그대로면 확정 없이도 매니페스트에 든다.")
     tgt = m.get("target") or "mobile"
+    for sid, status in (dv.get("layout_status") or {}).items():
+        if status.get("status") != "complete":
+            detail = ", ".join(status.get("unresolved_classes") or []) or status.get("reason") or "확인 필요"
+            warn += f"\n! 레이아웃 추출 {sid}: {status.get('status')} — {detail}"
     warn += (f"\n디자인 대상: **{tgt}** ({'사람 확정' if m.get('target_source') == 'manifest' else '패키지에서 감지'}; 근거: "
              + "; ".join(m.get("target_evidence") or [])[:300] + ") — 틀리면 import_design(target=mobile|web|mixed) 로 덮는다."
              + (" 브레이크포인트 변형은 한 화면의 variants 로 묶었다: "
@@ -259,7 +266,8 @@ def import_design(root, path=None, screens=None, components=None, url=None, targ
             "message": (f"패키지 등록: 화면 {len(m['screens'])}개 · 컴포넌트 {len(comps)}개 ({ctypes}) · 토큰 {len(m['tokens'])}개 · "
                         f"문서 {len(m['docs'])}개 · 파생: 문구 {dv['strings']} · 아이콘 {dv['icons']} · "
                         f"모델 {', '.join(dv['entities']) or '없음'} · 핸들러 {dv['handlers']} · "
-                        f"전이 {dv['navigation']['transitions']} · 의도 {dv['intent_turns']}턴 (design/, 지문 {st['fingerprint']}).{warn}\n"
+                        f"전이 {dv['navigation']['transitions']} · 의도 {dv['intent_turns']}턴 · 파생 {dv['elapsed_seconds']}초 "
+                        f"(design/, 지문 {st['fingerprint']}).{warn}\n"
                         "화면 목록과 컴포넌트(타입) 목록을 사용자에게 보이고 빠진 것이 없는지 확인받는다.\n"
                         + (f"README 의 스택 힌트 (기본값 제안 — 사람이 확정):\n  " + "\n  ".join(hints) + "\n" if hints else "")
                         + f"다음: {st['next']}")}
@@ -548,6 +556,7 @@ def precheck(root, role):
     return {"ok": True, "passed": ok, "complete": not missing, "missing": missing, "blockers": e["blockers"], "api_drift": e.get("api_drift"),
             "consumption": {"used": cons["used"], "total": cons["total"], "rate": cons["rate"],
                             "unused": [i["id"] + " " + (i["const"] or i["label"]) for i in cons["items"] if not i["used"]]},
+            "design_review": e.get("design_review"),
             "hardcodes": e["hardcodes"][:30], "test_bypass": e["bypass"], "tokens": e.get("tokens") or [],
             "message": (("PRECHECK PASS. Next: report(role, report) [R1]." if ok and not missing else
                          "PRECHECK FAIL. Fix every blocker, rerun precheck [R1]. A report with an open blocker is refused "
@@ -626,8 +635,8 @@ def verify(root):
     if result["verdict"] == "pass":
         nxt = "⑦ ship — 사람 승인 뒤 본선 머지."
     elif result["verdict"] == "pass_static":
-        nxt = ("⑦ ship — 정적 검사 통과, 런타임 미검증 역할: " + ", ".join(result["runtime_pending"])
-               + ". 승인하면 머지되고 runtime_pending 으로 남는다.")
+        nxt = ("⑦ ship — 정적 산출물 검사 통과. 실검증은 별도이며 미실행 역할: " + ", ".join(result["runtime_pending"])
+               + ". 승인하면 runtime_pending 으로 남는다.")
     elif proposals:
         nxt = ("계약 수정 제안이 있다 — 사람에게 보이고, 수용하면 back(to='api' 또는 'import') 로 계약을 고친다. "
                "아니면 build 로 재착수한다 (인계 자동 포함).")

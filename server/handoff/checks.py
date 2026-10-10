@@ -72,6 +72,16 @@ def targets(root):
             "handlers": handlers, "gesture_handlers": gestures, "target": m.get("target") or "mobile"}
 
 
+def design_review(root, role):
+    """Non-blocking design extraction review. Backend work has no UI design obligations."""
+    if role == "backend":
+        return {"interactions": [], "layout": {}}
+    base = os.path.join(util.design_dir(root), derive.DERIVED_DIR)
+    flows = util.read_json(os.path.join(base, "interactions.json"), {}) or {}
+    status = util.read_json(os.path.join(base, "layout-status.json"), {}) or {}
+    return {"interactions": flows.get("flows", []), "layout": status.get("screens", {})}
+
+
 def string_const(row):
     """strings.json 행 → 생성 상수 이름 (gen._string_tree 와 같은 규칙)."""
     grp, _, leaf = row["key"].partition(".")

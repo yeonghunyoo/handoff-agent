@@ -76,17 +76,17 @@ python3 <플러그인 루트>/server/run.py submit answer.json --root .   # 과�
 | ③ 백엔드 계약 | 화면·문서에서 필요한 데이터로 `api/openapi.yaml` 초안 | — |
 | ④ 계약 확정 ✋ | 요약 표(디자인 출처 · 화면 · 계약 지문 · 선택한 인프라)를 채팅에 보인다 | 지문을 대조하고 승인/반려 |
 | ⑤ 구현 | 역할별 워크트리 + 생성 상수(`ApiRoutes` `Screens` `DesignTokens`) + 착수 프롬프트로 구현. `build` 응답의 `dispatch` 대로 — 기본 병렬(역할 전부 동시에), `config.json` 의 `dispatch.mode: "serial"` 로 한 번에 하나씩. 리포트는 계약 항목을 **전부** 소비해야 접수된다 (승인된 발산 · blocked 만 예외) — 파리티 갭은 접수 단계에서 막힌다. loop 가 나면 갭 있는 역할만 다시 뛴다 | 기다린다 |
-| ⑥ 검사 | 서버가 재검사해 점수 → `loop`(인계 후 재착수) 또는 `pass` / `pass_static`(정적 검사는 통과, 빌드·테스트 증거가 없는 역할이 있음 — Xcode·SDK 없는 기기) | 계약 수정 제안이 있으면 판단 |
-| ⑦ 완료 승인 ✋ | 예외 항목(테스트 skip·하드코딩·플랫폼 차이·런타임 미검증)과 함께 보인다 | 승인 → main 머지. `pass_static` 이었으면 그 역할이 `runtime_pending` 으로 남는다 — 툴체인 있는 기기에서 나중에 검증. 막으려면 config `verify.require_runtime: true` |
+| ⑥ 검사 | 서버가 산출물을 정적으로 재검사해 점수 → `loop` 또는 `pass_static`. 테스트·시뮬레이터 실검증은 이 단계에서 실행하지 않는다 | 계약 수정 제안과 추출 확인 항목을 판단 |
+| ⑦ 완료 승인 ✋ | 예외 항목(미소비 계약·하드코딩·플랫폼 차이·미검증 상태)과 함께 보인다 | 승인 → main 머지. 빌드·실검증은 별도 절차 |
 
 앞 단계로 돌아가고 싶으면 아무 때나 말하면 된다(`back`). 잠금 뒤 `design/`·`api/` 가 바뀌면 자동으로 재승인을 요구한다.
 
 ## 점수
 
-`점수 = 0.4·소비 + 0.3·테스트 + 0.3·파리티`, 85 이상이고 블로커가 없으면 `pass` (`.handoff/config.json` 으로 조정).
+점수는 소비·파리티 등 실행하지 않는 검증 항목을 빼고 가중치를 다시 정규화한다. 테스트와 시뮬레이터 실검증은 기본 `verify`와 별도다.
 
 - **소비** — 역할별 계약 항목(라우트 `API-xx` · 화면 `SCR-xx`) 소비율 − 하드코딩 감점(hex 색 · 토큰에 이름 있는 치수 · 라우트 원문)
-- **테스트** — 설정된 `verify.commands` 를 서버가 재실행한 결과 > 자기 신고. 계약 상수를 하나도 안 건드린 스위트는 증거가 아니라 제외
+- **동작 계약** — 핸들러 변경 상태·화면 전이·오버레이 흐름을 파생해 구현 기준으로 제공한다. 실행 테스트는 별도 수행
 - **파리티** — 미승인 발산 + 실측 갭(iOS↔Android 소비 항목·토큰 집합 차). web 이 있으면 web↔모바일(iOS·Android 중 하나라도 한 것의 합집합) 갭을 따로 한 번 더 잰다 — 스와이프류 `gesture` 핸들러는 web 쪽에서 자동 면제. 상대 플랫폼이 이번 사이클에 없으면(iOS 와 Android 를 따로 돌릴 때) 같은 계약 지문으로 지난번 검사한 스냅샷(`.handoff/evidence/`)과 대조한다
 - **블로커** — `design/`·`api/` 변경, 생성 상수 드리프트, 담당 밖 쓰기, 본선 오염, 시크릿(코드·민감 파일·커밋 이력), 빌드 실패
 
@@ -137,8 +137,9 @@ python3 <플러그인 루트>/server/run.py submit answer.json --root .   # 과�
 | `behavior.json` | 핸들러 → 바꾸는 state 키 · 탭 전이 · 타이머(ms) | 두 플랫폼이 같은 전이표를 구현 |
 | `components.json` | 클릭·입력·제스처 속성과 오버레이 스타일 블록 → 타입(`sheet` `modal` `popover` `tab` `button` `toggle` `input` `slider` `item` `gesture`) · 귀속 화면(상태 분기 + `renderVals` 의 탭 비교 플래그 + 오버레이 구역) | 매니페스트 `components` · 착수 프롬프트의 Components 절 |
 | `navigation.json` | 초기 state 의 `is*`=true 진입 화면 · `setTab` 전이 · 핸들러 본문의 state 리터럴(`tab: 'home'` · `settingsOpen: true`) | 매니페스트 `navigation` — 두 플랫폼이 같은 전이 그래프 |
+| `interactions.json` | 핸들러 상태 변경·화면 전이·오버레이 열기/닫기 | 핵심 동작 흐름의 구현 기준 |
 | `rules.json` | 디자인 시스템 `_adherence`(hex·px·폰트 금지) | `raw-font` 검출 등 검사 규칙이 디자인 시스템을 따라간다 |
-| `layout/<screen>.json` | 화면 구역의 마크업을 **무손실** 노드 트리로 — 스타일 속성 전부 + 토큰(`var(--x)`·값이 맞는 hex·종류가 맞는 px)은 `DesignTokens.*`, 문구는 `Strings.*`(포맷은 `params`), svg 는 `Icons.*`, `sc-if`→`when`, `sc-for`→`items/as`, 핸들러→`on_*` | 빌더가 HTML 을 다시 읽어 화면을 재구성하지 않고 트리를 그대로 옮긴다. 실측(2026-09-04, 화면 2×플랫폼 2×2회): 분기·바인딩 누락이 줄고 빌더 토큰 −39% · 시간 −58% |
+| `layout/<screen>.json` + `layout-status.json` | 화면 구조·인라인 스타일을 트리로 만들고 추출 상태, 미해석 클래스, 원본 CSS transition/animation 선언을 표시 | 부분·실패 추출과 동작 움직임을 구현자가 원본에서 확인 |
 
 ## Claude Design 과의 연결 — `/claude-design`
 
@@ -183,7 +184,7 @@ Claude Design 은 웹 제품이고, Claude Code 에서 닿는 통로는 넷이�
 
 `.handoff/`(상태·리포트·워크트리·그래프 체크포인트 `graph.sqlite` — 커밋 안 됨) · `design/`(패키지) · `api/openapi.yaml` · `shared/generated/`(워크트리에만) ·
 `docs/handoff-*` · `.gitignore` 몇 줄 · `CLAUDE.md` 의 handoff 절 · (선택) `handoff.spec.json`. 설정은 `.handoff/config.json` (담당 경로 `roles` ·
-`score.threshold` · `verify.commands` · `verify.require_runtime` · `builder.command` · `dispatch.mode` — 셸 명령은 서버가 실행하므로 config 가 git 에 추적되면 실행을 거부한다).
+`score.threshold` · `verify.commands`(별도 실행 설정) · `verify.require_runtime` · `builder.command` · `dispatch.mode`). 기본 verify는 IDE·시뮬레이터·테스트 명령을 실행하지 않는다.
 
 ## 검증
 

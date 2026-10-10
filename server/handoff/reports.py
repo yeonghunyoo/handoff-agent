@@ -222,7 +222,11 @@ def kickoff(root, cfg, role, st, t, handoff):
     if os.path.isfile(os.path.join(dv, "entities.json")):
         L.append("- design/derived/entities.json   (data arrays + initial state from the prototype — the domain model and seed data)")
     if os.path.isfile(os.path.join(dv, "behavior.json")):
-        L.append("- design/derived/behavior.json   (handlers → state keys they set, tab transitions, timers — implement the same transitions)")
+        L.append("- design/derived/behavior.json   (handlers → state keys they set, tab transitions, timers)")
+    if os.path.isfile(os.path.join(dv, "interactions.json")) and role != "backend":
+        L.append("- design/derived/interactions.json   (core interaction flows and overlay dismiss actions — preserve these state transitions)")
+    if os.path.isfile(os.path.join(dv, "layout-status.json")) and role != "backend":
+        L.append("- design/derived/layout-status.json   (screen extraction status and source CSS transition/animation declarations; inspect partial/failed entries before implementation)")
     if os.path.isfile(os.path.join(util.design_dir(root), "handoff.manifest.json")):
         L.append("- design/handoff.manifest.json   (the full index: screens with their components/strings/icons, typed components, navigation graph, initial state, entity summary)")
     if os.path.isfile(os.path.join(dv, "components.json")) and role != "backend":
@@ -236,7 +240,7 @@ def kickoff(root, cfg, role, st, t, handoff):
     if os.path.isfile(os.path.join(dv, "strings.json")) and role != "backend":
         for s in m.get("screens", []):
             if os.path.isfile(os.path.join(util.design_dir(root), derive.DERIVED_DIR, "layout", f"{s['id']}.json")):
-                L.append(f"- design/derived/layout/{s['id']}.json   (screen `{s['id']}` as a lossless layout tree — BUILD FROM THIS: same nesting and order, "
+                L.append(f"- design/derived/layout/{s['id']}.json   (screen `{s['id']}` as a structural layout tree — BUILD FROM THIS: same nesting and order, "
                          "every `style` property carried over, tokens/strings/icons already named as constants, `when`/`items`/`on_*` are the "
                          "conditions, lists and handlers; `raw_text` marks copy that has no Strings key — keep it verbatim and list it in report.human_check)")
         L.append("- design/derived/strings.json + shared/generated/Strings.*   (every piece of copy, keyed by screen — never inline Korean text [C3]; "
@@ -357,13 +361,13 @@ def kickoff(root, cfg, role, st, t, handoff):
     L += ["", "## Build loop — the slow part, keep it short",
           "- The fix→build→fix loop must run the CHEAPEST target that surfaces the error. Full packaging, release/R8 builds, "
           "lint and screenshots run ONCE at the end, not every cycle."
-          + ("  Iterate with `./gradlew :app:compileDebugKotlin`; `assembleDebug`, `assembleRelease`, `lintDebug` and the emulator come last."
+          + ("  Iterate with `./gradlew :app:compileDebugKotlin`; packaging and lint come last. Keep device/simulator checks separate."
              if role == "android" else
              "  Iterate with `xcodebuild -destination 'generic/platform=iOS Simulator' build -quiet` (no simulator boot); "
-             "`build-for-testing` once, then `test-without-building` per cycle; the simulator and screenshots come last."
+             "keep simulator tests and screenshots in a separate, explicitly requested validation run."
              if role == "ios" else
-             "  Iterate with `tsc --noEmit` (type errors only, seconds); run `vitest --run` per cycle; `next build` / `vite build`, "
-             "lint and Playwright screenshots come ONCE at the end."
+             "  Iterate with `tsc --noEmit` (type errors only, seconds); `next build` / `vite build` and lint come last. "
+             "Keep browser/device interaction tests separate from artifact verification."
              if role == "web" else ""),
           "- Never burn turns waiting. A command that may exceed ~2 minutes goes `run_in_background: true` with its output to a log file; "
           "then wait with ONE until-loop (`until grep -qE 'BUILD (SUCCESSFUL|FAILED)' <log>; do sleep 5; done`). "
@@ -381,8 +385,9 @@ def kickoff(root, cfg, role, st, t, handoff):
 
 def verify_doc(root, result, version):
     L = [f"# 검사 v{version} — 점수 {result['score']}/{result['threshold']} → {result['verdict']}", ""]
+    L.append(f"- 정적 산출물 검증 {result.get('timings', {}).get('total_seconds', 0)}초 · 시뮬레이터 실검증: 별도 실행 (이번 검사에서는 실행 안 함)")
     c = result["components"]
-    L.append(f"- 소비 {c['consumption']} · 테스트 {c['tests'] if c['tests'] is not None else '못 잼'} · "
+    L.append(f"- 소비 {c['consumption']} · 테스트 별도 실행 · "
              f"파리티 {c['parity']} · 하드코딩 {c['hardcodes']} · 미승인 발산 {c['unapproved_divergences']} · "
              f"파리티 갭 {c['parity_gaps']}")
     if result["blockers"]:
@@ -395,6 +400,14 @@ def verify_doc(root, result, version):
                  + (f" {e['tests']['score']:.0f}" if e['tests']['score'] is not None else "")
                  + f" · 작성 순서 {e['test_provenance']['verdict']} · 계약 접촉 "
                    f"{e['test_coverage']['used']}/{e['test_coverage']['total']}")
+        review = e.get("design_review") or {}
+        flows = review.get("interactions") or []
+        if flows:
+            L.append(f"- 핵심 동작 계약: {len(flows)}개 (코드 소비 여부는 핸들러·화면 계약 검사로 확인)")
+        for sid, st in (review.get("layout") or {}).items():
+            if st.get("status") != "complete":
+                detail = ", ".join(st.get("unresolved_classes") or []) or st.get("reason") or "확인 필요"
+                L.append(f"- 레이아웃 확인 필요 {sid}: {st.get('status')} — {detail}")
         un = [i for i in cons["items"] if not i["used"]]
         if un:
             L.append("- 안 된 항목: " + ", ".join(f"{i['id']} {i['const'] or i['label']}" for i in un[:20]))
@@ -583,7 +596,7 @@ def checklist(result, version):
         L.append("")
     # 분석 — 숫자에서 나오는 사실만
     A = ["**분석**"]
-    A.append(f"- 소비 {c['consumption']} · 테스트 {c['tests'] if c['tests'] is not None else '못 잼'} · 파리티 {c['parity']} "
+    A.append(f"- 소비 {c['consumption']} · 테스트 별도 실행 · 파리티 {c['parity']} "
              f"(가중 합 {result['score']}, 임계 {result['threshold']})")
     undone = [i for i in items if not i["done"] and i["id"] not in ("HARD", "EXTRA")]
     extras = [i for i in items if i["id"] == "EXTRA"]
@@ -598,9 +611,8 @@ def checklist(result, version):
         A.append(f"- 하드코딩 {c['hardcodes']}건 — 토큰·상수로 바꾸면 소비 점수가 오른다")
     if c["parity_gaps"] or c["unapproved_divergences"]:
         A.append(f"- 파리티 갭 {c['parity_gaps']} · 미승인 발산 {c['unapproved_divergences']} — 한쪽만 구현했거나 승인 없이 달리 만든 것")
-    none_tests = [r for r, s_ in c["tests_source"].items() if s_ in ("none", "uncontracted")]
-    if none_tests:
-        A.append(f"- 테스트 증거 없음: {', '.join(none_tests)} ({'계약을 안 건드리는 스위트' if 'uncontracted' in c['tests_source'].values() else '리포트·서버 실행 둘 다 없음'})")
+    if c["tests_source"]:
+        A.append("- 자동 테스트와 시뮬레이터 실검증은 이번 단계에서 실행하지 않았다")
     if result["blockers"]:
         A.append("- 블로커 " + str(len(result["blockers"])) + "건 — 점수와 무관하게 pass 가 안 된다: " + "; ".join(result["blockers"][:5]))
     props = [(r, p_) for r, e in result["roles"].items() for p_ in ((e.get("report") or {}).get("proposals") or [])]

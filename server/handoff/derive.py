@@ -839,6 +839,8 @@ def _screen_slice(markup, regions, sc):
         m = re.search(r'<[a-z][^>]*\bid="' + re.escape(anchor.lstrip("#")) + r'"', markup)
         if m:
             return markup[m.start():]
+        return ""
+    # layout_status rejects ambiguous multi-screen files before this fallback is used.
     body = re.search(r"<body\b[^>]*>(.*)</body>", markup, re.S)
     return body.group(1) if body else markup
 
@@ -978,6 +980,57 @@ def layout(html, screens, comps, tokens, string_rows, icon_rows):
     return out
 
 
+def layout_status(html, screens, comps):
+    """Report whether each screen has a usable slice and which class rules need human interpretation."""
+    markup, regions = regions_of(html, list(screens), comps)
+    styles = "\n".join(re.findall(r"<style\b[^>]*>(.*?)</style>", markup, re.I | re.S))
+    has_external_css = bool(re.search(r'<link\b(?=[^>]*\bstylesheet\b)', markup, re.I))
+    result = {}
+    for sc in screens:
+        sid = sc["id"]
+        piece = _screen_slice(markup, regions, sc) if len(screens) == 1 or sc.get("anchor") or any(r[2] == sid for r in regions) else ""
+        if not piece:
+            result[sid] = {"status": "failed", "reason": "screen region or anchor could not be resolved", "unresolved_classes": []}
+            continue
+        classes = set()
+        for attr in re.findall(r'\bclass=["\']([^"\']+)', piece):
+            classes.update(attr.split())
+        unresolved = []
+        motion = []
+        for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", styles):
+            if classes and any(re.search(r"\." + re.escape(cls) + r"(?:[^\w-]|$)", selector) for cls in classes):
+                declarations = {k.strip().lower(): v.strip() for k, v in re.findall(
+                    r"([\w-]+)\s*:\s*([^;]+)", body)
+                    if k.strip().lower().startswith(("transition", "animation"))}
+                if declarations:
+                    motion.append({"selector": selector.strip(), "properties": declarations})
+        for cls in sorted(classes):
+            if has_external_css or re.search(r"(?:^|[\s,>+~])\.?" + re.escape(cls) + r"(?:[\s.#:[,>+~]|$)", styles):
+                unresolved.append(cls)
+        result[sid] = {"status": "partial" if unresolved else "complete",
+                       "reason": "class CSS requires platform interpretation" if unresolved else None,
+                       "unresolved_classes": unresolved, "motion": motion}
+    return result
+
+
+def interactions(behavior_rows, navigation_rows, components_rows):
+    """Compact deterministic interaction contract from parsed handlers and navigation/overlay components."""
+    rows = []
+    transitions = {x.get("via"): x for x in navigation_rows.get("transitions", []) if x.get("via")}
+    for name, detail in sorted((behavior_rows.get("handlers") or {}).items()):
+        tr = transitions.get(name, {})
+        rows.append({"id": f"FLOW-{len(rows)+1:02d}", "trigger": name,
+                     "sets": detail.get("sets", []), "calls": detail.get("calls", []),
+                     "transition": tr or None, "critical": bool(tr)})
+    for comp in components_rows:
+        if comp.get("type") not in ("sheet", "modal", "popover"):
+            continue
+        rows.append({"id": f"FLOW-{len(rows)+1:02d}", "trigger": comp.get("open", []),
+                     "sets": [], "calls": [], "overlay": comp.get("id"),
+                     "dismiss": comp.get("close", []), "critical": True})
+    return {"flows": rows}
+
+
 # ─────────────────────────── 조립 ───────────────────────────
 
 def _count_nodes(t):
@@ -1091,6 +1144,9 @@ def write_all(root, manifest):
         summary["components"][c["type"]] = summary["components"].get(c["type"], 0) + 1
     util.write_json(os.path.join(out_dir, "navigation.json"), nav)
     summary["navigation"] = {"entry": nav["entry"], "tabs": len(nav["tabs"]), "transitions": len(nav["transitions"])}
+    flows = interactions(beh, nav, comps)
+    util.write_json(os.path.join(out_dir, "interactions.json"), flows)
+    summary["interactions"] = len(flows["flows"])
     # 매니페스트(handoff.manifest.json)가 상세를 담을 때 쓰는 재료 — 응답에는 싣지 않는다 (tools 가 pop)
     summary["_detail"] = {
         "components": comps, "navigation": nav, "state": ents.get("_state") or {},
@@ -1104,17 +1160,28 @@ def write_all(root, manifest):
     shutil.rmtree(lay_dir, ignore_errors=True)
     os.makedirs(lay_dir, exist_ok=True)
     summary["layout"] = {}
+    extraction = {}
     for f, scs in by_file.items():
         if f not in htmls:
+            for sc in scs:
+                extraction[sc["id"]] = {"status": "failed", "reason": "screen source file could not be read", "unresolved_classes": []}
+            continue
+        extraction.update(layout_status(htmls[f], scs, comps_by_file.get(f) or []))
+        usable = [sc for sc in scs if extraction.get(sc["id"], {}).get("status") != "failed"]
+        if not usable:
             continue
         try:
-            trees = layout(htmls[f], scs, comps_by_file.get(f) or [], manifest.get("tokens") or {}, strs, ics)
+            trees = layout(htmls[f], usable, comps_by_file.get(f) or [], manifest.get("tokens") or {}, strs, ics)
         except Exception as e:                              # 트리는 보조물 — 실패해도 파생 전체를 막지 않는다
             summary["layout"]["_error"] = f"{type(e).__name__}: {e}"
+            for sc in usable:
+                extraction[sc["id"]] = {"status": "failed", "reason": "layout tree generation failed", "unresolved_classes": []}
             continue
         for sid, tree in trees.items():
             util.write_json(os.path.join(lay_dir, f"{sid}.json"), tree)
             summary["layout"][sid] = _count_nodes(tree)
+    util.write_json(os.path.join(out_dir, "layout-status.json"), {"screens": extraction})
+    summary["layout_status"] = extraction
     turns = []
     for c in manifest.get("chats") or []:
         turns += intent(util.read_text(os.path.join(d, c)))

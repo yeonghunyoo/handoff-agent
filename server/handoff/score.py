@@ -1,18 +1,17 @@
 """판정 — 가중 점수 + 임계치 + 하드 블로커.
 
-  점수 = w·소비 + w·테스트 + w·파리티      (잴 수 없는 성분은 빼고 정규화)
+  점수 = w·소비 + w·파리티      (실행하지 않는 성분은 빼고 정규화)
   소비   = 역할별 계약 소비율 − 하드코딩 감점
-  테스트 = 서버 재실행 결과 > 자기신고. 계약 항목을 하나도 안 건드린 스위트는 증거가 아니라 제외
   파리티 = 100 − 벌점 × (미승인 발산 + 실측 갭)
   블로커가 하나라도 있으면 점수와 무관하게 loop.
 
-검사는 두 층이다. static(소비 · 하드코딩 · 파리티 · 시크릿 · 위반 — 어디서든 잰다)과 runtime(서버가 돌린 테스트 ·
-빌드 성공 — 툴체인이 있는 기기에서만). 통과했는데 어떤 역할에 runtime 증거가 없으면 판정은 pass 가 아니라
-pass_static 이고, ship 이 그 역할을 runtime_pending 으로 남긴다.
+기본 검사는 산출물 정적 검증이다. 실행 테스트와 시뮬레이터 검증은 별도이며 자동 실행하지 않는다.
+런타임 증거가 없으면 판정은 pass_static 이고 ship 은 해당 역할을 runtime_pending 으로 남긴다.
 
 착수 프롬프트의 체크리스트 · precheck · verify 가 전부 같은 함수를 쓴다 — 몰라서 틀리는 루프를 없앤다.
 """
 import os
+import time
 
 from . import checks, git, leaks, util
 
@@ -66,6 +65,7 @@ def validate_report(rep):
 
 
 def evaluate_role(root, cfg, role, t, version, precheck=False):
+    started = time.perf_counter()
     role_path = cfg["roles"].get(role, role)
     wt = util.worktree(root, role)
     tree = wt if os.path.isdir(wt) else root
@@ -96,7 +96,8 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
     bypass = checks.test_bypass(root, cfg, role)
     prov = checks.test_provenance(root, cfg, role)
     cov = checks.test_coverage(tree, role_path, cfg, role, t)
-    verify = checks.run_verify(root, cfg, role)
+    # Tests and simulator commands run separately; this path verifies artifacts only.
+    verify = None
 
     blockers = []
     if vio["protected"]:
@@ -122,8 +123,6 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
     if dirty:
         blockers.append("[W2] main working tree is dirty — something wrote outside the worktrees: "
                         + ", ".join(dirty[:5]))
-    if verify and verify.get("ran") and verify["passed"] < verify["ran"]:
-        blockers.append(f"[T1] verify commands failed {verify['ran'] - verify['passed']}/{verify['ran']}")
     if not precheck:
         if report is None:
             blockers.append("[R1] no report — submit one with report()")
@@ -135,34 +134,24 @@ def evaluate_role(root, cfg, role, t, version, precheck=False):
         if report is not None and rv is not None and rv != version:
             blockers.append(f"[R1] report is for contract v{rv}, current is v{version}")
 
-    if verify and verify.get("ran"):
-        tests_score, src = verify["passed"] / verify["ran"] * 100, "server"
-    else:
-        tr = (report or {}).get("tests") or {}
-        p, f = tr.get("passed"), tr.get("failed")
-        if isinstance(p, int) and isinstance(f, int) and p + f > 0:
-            tests_score, src = p / (p + f) * 100, "self-reported"
-        else:
-            tests_score, src = None, "none"
-    if cov["total"] and cov["used"] == 0 and tests_score is not None:
-        tests_score, src = None, "uncontracted"        # 계약을 안 건드리는 스위트는 증거가 아니다
+    tests_score, src = None, "separate"
 
     reported = [d for d in ((report or {}).get("divergences") or []) if isinstance(d, (dict, str))]
     unapproved = [d for d in reported
                   if not checks._covered((d.get("topic") if isinstance(d, dict) else d), approved)]
 
     build_ok = ((report or {}).get("build") or {}).get("ok") if isinstance((report or {}).get("build"), dict) else None
-    server_ran = bool(verify and verify.get("ran"))
-    evidence = {"static": True,
-                "runtime": server_ran or build_ok is True,      # 서버가 돌렸거나, 빌더가 빌드 성공을 보고했거나
-                "runtime_source": "server" if server_ran else "self-reported" if build_ok is True else "none",
-                "build_ok": build_ok}
+    evidence = {"static": True, "runtime": False,
+                "runtime_source": "not_run",
+                "simulator_validation": "not_run", "build_ok": build_ok}
 
+    review = checks.design_review(root, role)
     return {"role": role, "approved": approved, "role_path": role_path, "blockers": blockers,
             "consumption": cons, "api_drift": api_drift, "hardcodes": hard, "tokens": tokens, "bypass": bypass,
-            "test_provenance": prov, "test_coverage": cov,
+            "test_provenance": prov, "test_coverage": cov, "design_review": review,
             "tests": {"score": tests_score, "source": src, "detail": verify}, "evidence": evidence,
-            "unapproved_divergences": unapproved, "report": report, "changed": files}
+            "unapproved_divergences": unapproved, "report": report, "changed": files,
+            "elapsed_seconds": round(time.perf_counter() - started, 3)}
 
 
 def evaluate(root, cfg, roles, version):
@@ -224,6 +213,9 @@ def evaluate(root, cfg, roles, version):
     verdict = "loop" if not ok else "pass_static" if runtime_pending else "pass"
     return {"roles": per, "score": round(score, 1), "threshold": sc["threshold"], "verdict": verdict,
             "runtime_pending": runtime_pending, "parity_snapshots": {r: s["at"] for r, s in snaps.items()},
+            "timings": {"roles_seconds": {r: per[r]["elapsed_seconds"] for r in roles},
+                        "total_seconds": round(sum(per[r]["elapsed_seconds"] for r in roles), 3)},
+            "simulator_validation": "not_run",
             "blockers": blockers, "parity": gaps, "parity_web": web_gaps,
             "components": {"consumption": round(cons_score, 1),
                            "tests": round(tests_score, 1) if tests_score is not None else None,
@@ -251,8 +243,7 @@ def exceptions(result):
         for x in ((e.get("report") or {}).get("human_check") or [])[:10]:
             items.append(f"[{r}] human check: {str(x)[:160]}")
         if not e.get("evidence", {}).get("runtime", True):
-            items.append(f"[{r}] runtime unchecked: no build/test evidence on this machine — static checks only; "
-                         "a machine with the toolchain verifies it later (runtime_pending)")
+            items.append(f"[{r}] runtime validation not run: static artifact checks only (runtime_pending)")
     for g in result["parity"]:
         items.append(f"[{g['missing']}] parity gap {g['kind']} {g['id']} — only {g['done']} did it")
     for g in result.get("parity_web") or []:
