@@ -181,6 +181,8 @@ C1 [BLOCK]  design/ and api/ are read-only. A wrong contract → report.proposal
 C2 [BLOCK]  shared/generated/ is read-only. Never edit or regenerate it.
 C3 [SCORE]  Consume the generated constants (ApiRoutes.* Screens.* DesignTokens.*). Raw paths,
             hex colors and token-valued numbers cost score.
+C4 [SCORE]  (backend) Your implementation's OpenAPI (schema_dump) is diffed against api/openapi.yaml. Missing or
+            renamed operations are unconsumed [R4]; routes the contract lacks go to the human. Propose, don't add.
 S1 [BLOCK]  No secret values in code or config. Use env vars; commit only *.example files.
 S2 [BLOCK]  Never read or commit .env, keys, certificates, credentials — even transiently.
 P1 [SCORE]  (apps) Consume the same contract items and tokens as the other platform. If a
@@ -287,7 +289,13 @@ def kickoff(root, cfg, role, st, t, handoff):
     stack = spec.get("stack") or {}
     infra = spec.get("infra") or {}
     if role == "backend":
-        L.append(f"- Backend stack: {stack.get('backend')}")
+        bs = flow.backend_stack(spec)
+        L.append(f"- Backend stack: {stack.get('backend')} ({bs['mode']})")
+        L.append(f"  {bs['hint']}")
+        if bs.get("dump"):
+            L.append(f"  Contract check [C4]: the server runs `{bs['dump']}` in {role_path}/ and diffs the JSON it prints against api/openapi.yaml "
+                     "(method + path, and operationId where the contract names one). Missing or renamed operations are unconsumed [R4]; "
+                     "routes the contract lacks are listed for the human — do not add endpoints, propose them in report.proposals.")
         L.append(f"- Infra: db={infra.get('db')} · auth={infra.get('auth')} · hosting={infra.get('hosting')}")
         sc = infra_mod.scale(infra.get("scale"))
         if sc:
@@ -491,7 +499,7 @@ def summary(root, st, routes=None):
     mismatch = (" — ! 플랫폼과 어긋난다 (모바일 디자인으로 web 을 만든다: 좁은 레이아웃을 가운데 놓는다)" if tgt == "mobile" and plats_ == ["web"] else
                 " — ! 플랫폼과 어긋난다 (데스크톱 디자인으로 앱을 만든다: 좁은 레이아웃만 옮긴다)" if tgt == "web" and "web" not in plats_ and plats_ else "")
     rows.append(("디자인 대상", f"{tgt} ({'사람 확정' if m.get('target_source') == 'manifest' else '패키지에서 감지'})" + mismatch))
-    rows.append(("백엔드 스택", stack.get("backend") or "-"))
+    rows.append(("백엔드 스택", (stack.get("backend") or "-") + f" — 계약 대조: {flow.STACK_MODE_KO[flow.backend_stack(spec)['mode']]}"))
     for k in ("ios_project", "android_project", "web_project"):
         if stack.get(k):
             rows.append((f"{k.split('_')[0]} 프로젝트", stack[k]))
@@ -531,6 +539,18 @@ def checklist(result, version):
                  f"테스트 {e['tests']['source']}" + (f" {e['tests']['score']:.0f}" if e["tests"]["score"] is not None else "")
                  + " · 런타임 " + ("서버 실행" if ev.get("runtime_source") == "server" else
                                   "빌드 성공 자기신고" if ev.get("runtime_source") == "self-reported" else "**미검증** (정적 검사만)"))
+        ad = e.get("api_drift")
+        if r == "backend" and ad:
+            if ad.get("source") == "none":
+                L.append(f"- 계약 대조: 정적 추정 (경로 리터럴) — 생성 스키마 없음: {ad.get('reason')}")
+            else:
+                L.append(f"- 계약 대조: 구현의 OpenAPI ↔ api/openapi.yaml — 일치 {ad['matched']}/{ad['total']} · 빠짐 {len(ad['missing'])} · "
+                         f"이름 다름 {len(ad['renamed'])} · 계약 밖 {len(ad['extra'])}")
+                for x in ad["renamed"]:
+                    L.append(f"- [ ] operationId 다름: {x}")
+                for x in ad["extra"]:
+                    L.append(f"- [ ] 계약 밖 라우트 `{x}` — 승인하려면 back 으로 openapi 에 넣고 재승인, 아니면 지우게 한다")
+                    items.append({"role": r, "id": "EXTRA", "label": x, "done": False})
         for i in cons["items"]:
             items.append({"role": r, "id": i["id"], "label": i["const"] or i["label"], "done": bool(i["used"])})
             L.append(f"- [{'x' if i['used'] else ' '}] {i['id']} `{i['const'] or i['label']}`")
@@ -565,7 +585,10 @@ def checklist(result, version):
     A = ["**분석**"]
     A.append(f"- 소비 {c['consumption']} · 테스트 {c['tests'] if c['tests'] is not None else '못 잼'} · 파리티 {c['parity']} "
              f"(가중 합 {result['score']}, 임계 {result['threshold']})")
-    undone = [i for i in items if not i["done"] and i["id"] != "HARD"]
+    undone = [i for i in items if not i["done"] and i["id"] not in ("HARD", "EXTRA")]
+    extras = [i for i in items if i["id"] == "EXTRA"]
+    if extras:
+        A.append(f"- 계약 밖 라우트 {len(extras)}건 — 빌더가 계약에 없는 엔드포인트를 열었다. 사람이 승인(계약에 넣기) 또는 삭제를 정한다")
     if undone:
         by = {}
         for i in undone:

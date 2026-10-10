@@ -294,6 +294,7 @@ def spec_save(root, spec):
         os.remove(util.ho(root, DRAFT))
     except OSError:
         pass
+    _fill_schema_dump(root, merged)
     if st["phase"] == "done":
         st["cycle"] += 1
         st["phase"] = "api"
@@ -302,6 +303,20 @@ def spec_save(root, spec):
     _save(root, st, "spec_saved", platforms=merged["platforms"], stack=merged.get("stack"), infra=merged.get("infra"))
     cfg, st = _st(root)
     return {"ok": True, "spec": merged, "message": f"스펙 확정: {merged['platforms']} · {merged.get('stack')} · {merged.get('infra')}\n다음: {st['next']}"}
+
+
+def _fill_schema_dump(root, spec):
+    """stack.backend 가 표(flow.BACKEND_STACKS)에 있으면 config 의 verify.schema_dump.backend 를 그 덤프 명령으로 채운다.
+    사람이 이미 적어 둔 값은 덮지 않는다. config.json 의 사용자 부분만 고친다 (기본값을 파일에 굳히지 않는다)."""
+    dump = flow.backend_stack(spec).get("dump") or ""
+    if not dump:
+        return
+    raw = util.read_json(util.ho(root, util.CONFIG), {}) or {}
+    cur = ((raw.get("verify") or {}).get("schema_dump") or {}).get("backend")
+    if cur:
+        return
+    raw.setdefault("verify", {}).setdefault("schema_dump", {})["backend"] = dump
+    util.write_json(util.ho(root, util.CONFIG), raw)
 
 
 # ─────────────────────────── ③ API ───────────────────────────
@@ -530,7 +545,7 @@ def precheck(root, role):
     cons = e["consumption"]
     ok = not e["blockers"]
     missing = _unconsumed(cfg, e)
-    return {"ok": True, "passed": ok, "complete": not missing, "missing": missing, "blockers": e["blockers"],
+    return {"ok": True, "passed": ok, "complete": not missing, "missing": missing, "blockers": e["blockers"], "api_drift": e.get("api_drift"),
             "consumption": {"used": cons["used"], "total": cons["total"], "rate": cons["rate"],
                             "unused": [i["id"] + " " + (i["const"] or i["label"]) for i in cons["items"] if not i["used"]]},
             "hardcodes": e["hardcodes"][:30], "test_bypass": e["bypass"], "tokens": e.get("tokens") or [],
@@ -622,6 +637,7 @@ def verify(root):
             "runtime_pending": result["runtime_pending"], "parity_snapshots": result.get("parity_snapshots") or {},
             "blockers": result["blockers"], "components": result["components"], "parity": result["parity"], "parity_web": result.get("parity_web") or [],
             "proposals": proposals, "doc": doc, "screens_page": page, "checklist": cl,
+            "api_drift": (result["roles"].get("backend") or {}).get("api_drift"),
             "message": (f"점수 {result['score']}/{result['threshold']} → {result['verdict']}. "
                         "checklist.markdown(투두 목록 + 분석)을 채팅에 그대로 보인다.\n"
                         + (f"화면 대조(사진, 레포에서 연다): {page}\n" if page else "")

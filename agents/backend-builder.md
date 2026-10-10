@@ -16,6 +16,17 @@ decisions from the kickoff prompt. Read the design screens to understand what da
 (shapes, lists, filters, empty/error states). Provide an `.env.example` with placeholders for every
 env var — never real values. Tests must hit the contracted routes.
 
+## Contract check [C4]
+The kickoff prompt names the stack and its mode. The server diffs your implementation's OpenAPI against
+api/openapi.yaml (method + path, and operationId where the contract names one):
+- spec-first stacks (connexion · openapi-backend · fastify-openapi-glue): load api/openapi.yaml as the
+  routing table and give every operationId a handler — the app must boot with none missing.
+- generated stacks (FastAPI · Fastify · Hono · NestJS): set operationId on every route to the contract's name.
+- Either way, put `openapi_dump.py` (Python) or `openapi-dump.mjs` (Node) at your role path root; it prints
+  the implementation's OpenAPI document as JSON to stdout and exits 0. The kickoff prompt shows the snippet.
+- Do not add endpoints the contract lacks. The server lists them for the human; propose them in
+  `report.proposals` instead.
+
 ## Non-negotiable
 - Work only inside the worktree, under your role path. Commit per unit of work.
 - design/, api/, shared/generated/ are read-only. A wrong contract goes into `report.proposals`.
